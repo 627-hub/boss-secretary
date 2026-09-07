@@ -303,12 +303,13 @@ class Router:
         self.store.update(ticket_id, status=new)
         self._audit(ticket_id, actor, f"status.{old}→{new}", reason=reason)
 
-    def create_ticket(self, ctx: Mapping[str, Any], employee: Mapping[str, Any]) -> str:
+    def create_ticket(self, ctx: Mapping[str, Any], employee: Mapping[str, Any],
+                      type_override: str | None = None) -> str:
         tid = f"T{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
         record = {
             "ticket_id": tid, "feishu_instance_id": ctx.get("feishu_instance_id"),
             "employee_id": employee["user_id"], "dept_id": employee.get("dept_id"),
-            "type": self.flow.name, "status": DRAFT,
+            "type": type_override or self.flow.name, "status": DRAFT,
             "matrix_version": self.matrix.version,
             "sensitivity": ctx.get("sensitivity") or "normal",
             "amount": ctx.get("amount"), "currency": ctx.get("currency", "CNY"),

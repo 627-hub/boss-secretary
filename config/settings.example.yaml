@@ -6,6 +6,7 @@ feishu:
     boss: ""
     manager: ""
     finance: ""
+    legal: ""
 
 llm:
   provider: local
@@ -63,3 +64,12 @@ kingdee:
   bank_code: "1002"      # 银行存款
   dept_map: {}           # D1: "BM001"
   encoding: "gbk"
+
+contracts:
+  expiry_warn_days: 30
+legal:
+  review_points:
+    - 付款方式与节点明确
+    - 含违约责任条款
+    - 含验收标准
+    - 争议解决方式

@@ -112,6 +112,39 @@ CREATE TABLE IF NOT EXISTS allowances(
   expires_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS contracts(
+  contract_id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  dept_id TEXT,
+  title TEXT NOT NULL,
+  supplier TEXT,
+  amount REAL,
+  start_date TEXT,
+  end_date TEXT,
+  payment_terms TEXT,
+  plan TEXT,
+  status TEXT DEFAULT 'pending_review',
+  procurement_id TEXT,
+  ai_review TEXT,
+  evidence_file TEXT,
+  approvers TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS payments(
+  payment_id TEXT PRIMARY KEY,
+  contract_id TEXT,
+  procurement_id TEXT,
+  amount REAL NOT NULL,
+  seq TEXT,
+  status TEXT DEFAULT 'pending',
+  employee_id TEXT,
+  note TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  paid_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS budgets(
   dept_id TEXT NOT NULL,
   month TEXT NOT NULL,

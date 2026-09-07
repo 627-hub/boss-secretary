@@ -1,0 +1,17 @@
+matrix: procure
+version: 2
+hit_policy: FIRST
+inputs:
+  - {name: ptype, type: string, enum: [设备, 服务, 物料, 其他]}
+  - {name: amount, type: number}
+  - {name: rule_result, type: string, enum: [PASS, WARN, FAIL]}
+  - {name: llm_verdict, type: string, enum: [PASS, WARN, FAIL]}
+outputs:
+  - {name: action, type: string}
+  - {name: notify, type: list}
+rules:
+  - {id: P01, cells: {amount: "<=5000", rule_result: PASS, llm_verdict: PASS}, then: {action: MANAGER_BOSS}}
+  - {id: P02, cells: {amount: "*"}, then: {action: MANAGER_BOSS, notify: [legal, finance]}}
+  - id: P99
+    cells: {}
+    then: {action: MANUAL_REVIEW}

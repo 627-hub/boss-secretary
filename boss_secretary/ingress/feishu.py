@@ -134,12 +134,17 @@ class SecretaryBot:
         else:
             flow = R.load_flow(s.get("flow_config", "config/flows/reimburse.yaml"))
             mx = M.load(s["matrix"]["active"]["reimburse"])
+            mx_p = M.load(s["matrix"].get("active_procure",
+                                          "config/matrix/procure_v1.yaml"))
             rules_cfg = C.load_config(s.get("rules_config", "config/rules.yaml"))
             role_map = (s.get("feishu") or {}).get("roles") or {}
             resolvers = {role: (lambda t, uid=uid: uid or None) for role, uid in role_map.items()}
             self.router = R.Router(flow, mx, self.store, rules_cfg,
                                    notifier=FeishuEventBridge(self),
                                    role_resolvers=resolvers)
+            self.router_p = R.Router(flow, mx_p, self.store, rules_cfg,
+                                     notifier=FeishuEventBridge(self),
+                                     role_resolvers=resolvers)
         self.roles = (s.get("feishu") or {}).get("roles") or {}
         self._pending: dict[str, dict] = {}
         self._last_verify: dict[str, dict] = {}
@@ -370,6 +375,170 @@ class SecretaryBot:
                  for tid, st, amt in rows]
         return "\n".join(["你的报销单："] + lines)
 
+    def contract_review_card(self, cid: str, title: str, supplier: str,
+                             amount: Any, risks: list) -> dict:
+        risk_text = "\n".join(f"[{r.get('level', '中')}] {r.get('clause', '')}: "
+                              f"{r.get('note', '')}" for r in risks[:6]) or "无"
+        return {"config": {"wide_screen_mode": True},
+                "header": {"template": "purple",
+                           "title": {"tag": "plain_text", "content": f"合同审批 {cid}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md",
+                                            "content": f"**合同**：{title}\n"
+                                                       f"**供应商**：{supplier or '-'}\n"
+                                                       f"**金额**：{amount if amount is not None else '-'} 元\n"
+                                                       f"**AI 审查**：\n{risk_text}"}},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "批准"},
+                         "type": "primary",
+                         "value": {"action": "contract_approve", "contract_id": cid}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "拒绝"},
+                         "type": "danger",
+                         "value": {"action": "contract_reject", "contract_id": cid}}]}]}
+
+    def payment_card(self, pid: str, amount: Any, note: str) -> dict:
+        return {"config": {"wide_screen_mode": True},
+                "header": {"template": "green",
+                           "title": {"tag": "plain_text", "content": f"付款确认 {pid}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md",
+                                            "content": f"**金额**：{amount} 元\n**说明**：{note or '-'}"}},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "确认打款"},
+                         "type": "primary",
+                         "value": {"action": "payment_paid", "payment_id": pid}}]}]}
+
+    def _procurement_submit(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        print(f"[feishu] 采购抽取: {text[:40]!r}")
+        try:
+            ctx = E.extract_procurement(text, settings=self.settings)
+        except L.LLMError as e:
+            return f"采购单解析失败: {str(e)[:120]}"
+        print(f"[feishu] 采购抽取结果: {ctx}")
+        if not ctx.get("amount") or not ctx.get("title"):
+            return "请补充采购标的和金额，例如：采购测试服务器 8000 元，供应商 XX 电脑"
+        rule_results = C.run_rules({"amount": ctx["amount"],
+                                    "expense_type": ctx.get("ptype")},
+                                   self.store.history({"occurred_at":
+                                                        dt.date.today().isoformat()}))
+        summary = C.summarize(rule_results)
+        try:
+            rv = E.review_with_llm({"title": ctx["title"], "amount": ctx["amount"],
+                                    "expense_type": ctx.get("ptype"),
+                                    "reason": ctx.get("reason")},
+                                   rule_results, settings=self.settings)
+            print(f"[feishu] LLM 审查: {rv['verdict']}")
+        except L.LLMError as e:
+            rv = {"verdict": C.WARN, "confidence": 0.0,
+                  "evidence": [f"LLM 审查不可用: {e}"], "suggestions": []}
+        mctx = {"ptype": ctx.get("ptype"), "amount": ctx["amount"],
+                "rule_result": summary["overall"], "llm_verdict": rv["verdict"]}
+        try:
+            decision = M.evaluate(self.router_p.matrix, mctx)
+            action = decision.action
+        except M.NoMatchError:
+            action = "MANUAL_REVIEW"
+        tid = self.router_p.create_ticket(ctx, emp, type_override="procurement")
+        print(f"[feishu] 采购建单 {tid} → {action}")
+        outcome = self.router_p.run_review(tid, llm_verdict=rv["verdict"])
+        if outcome.next_status == R.SUBMITTED or outcome.next_status == R.ESCALATED:
+            return (f"采购单已受理 {tid}（{ctx['amount']}元），进入审批："
+                    f"{'、'.join(outcome.approver_roles) or '-'}；"
+                    f"通过后可发「登记合同 XX合同 供应商 金额 起止日期 付款条款」")
+        if outcome.next_status == R.AUTO_APPROVED:
+            return f"✅ 采购单 {tid} 已通过（{ctx['amount']}元）"
+        return f"采购单状态: {outcome.next_status}"
+
+    def _contract_register(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        print(f"[feishu] 合同登记: {text[:40]!r}")
+        try:
+            c = E.extract_contract(text, settings=self.settings)
+        except L.LLMError as e:
+            return f"合同要素解析失败: {str(e)[:120]}"
+        print(f"[feishu] 合同抽取结果: {c}")
+        if not c.get("title"):
+            return ("请按此格式登记：登记合同 XX采购合同 供应商YY 50000元 "
+                    "2026-09-01至2027-08-31 分三期付款")
+        points = self.settings.get("legal", {}).get("review_points") or []
+        try:
+            rv = E.review_contract(" ".join(str(v) for v in c.values() if v),
+                                   points, settings=self.settings)
+        except L.LLMError as e:
+            rv = {"verdict": C.WARN, "risks": [], "missing": [f"AI 审查不可用: {e}"]}
+        print(f"[feishu] 合同 AI 审查: {rv['verdict']} risks={len(rv['risks'])}")
+        cid = CT.create(self.store.conn, employee_id=emp["user_id"],
+                        dept_id=emp.get("dept_id"), title=c["title"],
+                        supplier=c.get("supplier"), amount=c.get("amount"),
+                        start_date=c.get("start_date"), end_date=c.get("end_date"),
+                        payment_terms=c.get("payment_terms"), ai_review=rv)
+        for role in ("legal", "boss"):
+            uid = self.roles.get(role)
+            if uid:
+                self.send_card(uid, self.contract_review_card(
+                    cid, c["title"], c.get("supplier"), c.get("amount"),
+                    rv["risks"] + [{"level": "提示", "clause": "缺失条款",
+                                    "note": "、".join(rv["missing"])}]))
+            else:
+                self.send_text(sender_open_id,
+                               f"提示：审批角色 {role} 未配置 open_id，合同 {cid} 无法推送")
+        miss = f"；缺失条款：{'、'.join(rv['missing'])}" if rv.get("missing") else ""
+        return (f"合同已登记 {cid}（AI 审查：{rv['verdict']}，"
+                f"风险 {len(rv['risks'])} 项{miss}），等待 legal+boss 会签生效")
+
+    def _contract_query(self, sender_open_id: str, cid: str) -> str:
+        c = CT.get(self.store.conn, cid)
+        if not c:
+            return f"合同不存在: {cid}"
+        paid = CT.paid_total(self.store.conn, cid)
+        return (f"{cid} [{c['status']}] {c['title']}\n供应商：{c.get('supplier') or '-'}\n"
+                f"金额：{c.get('amount') or '-'} 元（已付 {paid:.0f}）\n"
+                f"期限：{str(c.get('start_date'))[:10]} ~ {str(c.get('end_date'))[:10]}\n"
+                f"付款条款：{c.get('payment_terms') or '-'}")
+
+    def _contract_renew(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        cm = re.search(r"C\d{8}-[0-9A-F]{6}", text)
+        if not cm:
+            return "用法：续签 C20260907-XXXXXX [新结束日期 YYYY-MM-DD]"
+        dm = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
+        old_c = CT.get(self.store.conn, cm.group(0))
+        if not old_c:
+            return f"合同不存在: {cm.group(0)}"
+        new_end = dm.group(1) if dm else (dt.date.today() + dt.timedelta(days=365)).isoformat()
+        new_id = CT.renew(self.store.conn, cm.group(0), new_end,
+                          actor_id=sender_open_id)
+        for role in ("legal", "boss"):
+            uid = self.roles.get(role)
+            if uid:
+                self.send_card(uid, self.contract_review_card(
+                    new_id, old_c["title"], old_c.get("supplier"),
+                    old_c.get("amount"), [{"level": "低", "clause": "续签",
+                                           "note": f"续自 {cm.group(0)}，新期限至 {new_end}"}]))
+        return (f"续签合同 {new_id} 已创建（至 {new_end}），"
+                f"原合同 {cm.group(0)} 标记 renewed；等待 legal+boss 会签生效")
+
+    def _payment_create(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        cm = re.search(r"C\d{8}-[0-9A-F]{6}", text)
+        if not cm:
+            return "用法：付款 C20260907-XXXXXX 金额 [第一期备注]"
+        c = CT.get(self.store.conn, cm.group(0))
+        if not c:
+            return f"合同不存在: {cm.group(0)}"
+        if c["status"] not in (CT.ACTIVE, CT.EXPIRING):
+            return f"合同 {cm.group(0)} 状态 {c['status']}，不可发起付款"
+        nm = re.search(r"(\d+(?:\.\d+)?)\s*元", text)
+        if not nm:
+            return "请说明金额，例如：付款 C20260907-XXXXXX 5000元 第一期"
+        note = text.replace(nm.group(0), "").replace(cm.group(0), "").strip()
+        pid = CT.create_payment(self.store.conn, contract_id=cm.group(0),
+                                procurement_id=None, amount=float(nm.group(1)),
+                                employee_id=emp["user_id"], note=note[:30])
+        f_uid = self.roles.get("finance")
+        if f_uid:
+            self.send_card(f_uid, self.payment_card(pid, float(nm.group(1)), note[:30]))
+        return (f"付款单 {pid} 已创建（{c['title']} {nm.group(1)}元，"
+                f"合同已付 {CT.paid_total(self.store.conn, cm.group(0)):.0f}/"
+                f"{c.get('amount') or '-'}），待财务确认打款")
+
     def _budget_command(self, sender_open_id: str, text: str) -> str:
         parsed = BG.parse_budget_text(text)
         if parsed is None:
@@ -518,6 +687,17 @@ class SecretaryBot:
             return AL.to_table(AL.list_for(self.store.conn, sender_open_id))
         if any(k in text for k in ("额度", "备用金", "预算")):
             return self._allowance_request(sender_open_id, emp, text)
+        if text.startswith("登记合同"):
+            return self._contract_register(sender_open_id, emp, text)
+        if text.startswith("续签"):
+            return self._contract_renew(sender_open_id, emp, text)
+        if text.startswith("付款 "):
+            return self._payment_create(sender_open_id, emp, text)
+        cm = re.search(r"C\d{8}-[0-9A-F]{6}", text)
+        if cm and ("合同" in text) and len(text) < 25:
+            return self._contract_query(sender_open_id, cm.group(0))
+        if "采购" in text:
+            return self._procurement_submit(sender_open_id, emp, text)
         if text in ("取消", "不报了"):
             self._pending.pop(sender_open_id, None)
             return "已放弃当前待补单据"
@@ -572,6 +752,45 @@ class SecretaryBot:
                 self.send_text(a["employee_id"],
                                f"额度申请 {a['allowance_id']} 未获批准")
                 return "已拒绝"
+            if action in ("contract_approve", "contract_reject"):
+                cid = value.get("contract_id")
+                c = CT.get(self.store.conn, cid)
+                if c is None:
+                    return f"合同不存在: {cid}"
+                if action == "contract_reject":
+                    CT.reject(self.store.conn, cid, open_id, "卡片拒绝")
+                    if c.get("employee_id"):
+                        self.send_text(c["employee_id"], f"合同 {cid} 被拒绝")
+                    return "已拒绝"
+                if open_id not in (self.roles.get("legal"), self.roles.get("boss")):
+                    return "仅 legal/boss 可审批合同"
+                role = "boss" if open_id == self.roles.get("boss") else "legal"
+                st = CT.approve(self.store.conn, cid, open_id, role)
+                if st == CT.ACTIVE:
+                    if c.get("employee_id"):
+                        self.send_text(c["employee_id"],
+                                       f"✅ 合同 {cid} 已生效（会签完成），"
+                                       f"可按付款条款发「付款 {cid} 金额」")
+                    return f"✅ 合同 {cid} 会签完成，已生效"
+                return f"已批准（等待 {'boss' if role == 'legal' else 'legal'} 会签）"
+            if action == "payment_paid":
+                pid = value.get("payment_id")
+                if open_id != self.roles.get("finance"):
+                    return "仅财务可确认付款打款"
+                try:
+                    pm = CT.pay(self.store.conn, pid, open_id)
+                except ValueError as e:
+                    return f"打款失败: {e}"
+                paid = CT.paid_total(self.store.conn, pm["contract_id"]) \
+                    if pm.get("contract_id") else None
+                if pm.get("contract_id"):
+                    c = CT.get(self.store.conn, pm["contract_id"])
+                    if c and c.get("employee_id"):
+                        self.send_text(c["employee_id"],
+                                       f"✅ 付款 {pid} 已打款"
+                                       + (f"（合同累计已付 {paid:.0f} 元）"
+                                          if paid is not None else ""))
+                return "✅ 已确认打款"
             if action == "paid":
                 if self.roles.get("finance") and open_id != self.roles["finance"]:
                     return "仅财务可确认打款"
@@ -735,6 +954,21 @@ class SecretaryBot:
                     self.send_file(boss, result[key], file_type=ft)
         return f"月报 {month} 已生成并发送"
 
+    def _job_contract_expiry(self) -> str:
+        days = int((self.settings.get("contracts") or {}).get("expiry_warn_days", 30))
+        expiring = CT.expiring(self.store.conn, days=days)
+        if not expiring:
+            return "无临期合同"
+        for c in expiring:
+            msg = (f"⚠ 合同临期：{c['contract_id']} {c['title']} "
+                   f"（{c.get('supplier') or '-'}）将于 {str(c.get('end_date'))[:10]} "
+                   f"到期（剩 {c['days_left']} 天），已付 "
+                   f"{CT.paid_total(self.store.conn, c['contract_id']):.0f}/"
+                   f"{c.get('amount') or 0:.0f} 元。续签回复：续签 {c['contract_id']} 新结束日期")
+            for uid in filter(None, (self.roles.get("boss"), c.get("employee_id"))):
+                self.send_text(uid, msg)
+        return f"{len(expiring)} 份临期合同提醒"
+
     def _job_expire(self) -> str:
         return f"{AL.expire_sweep(self.store.conn)} 个额度过期"
 
@@ -751,6 +985,7 @@ class SecretaryBot:
             Job("monthly_report", "monthly", at="09:10", day=1, fn=self._job_monthly_report),
             Job("allowance_expire", "daily", at="08:00", fn=self._job_expire),
             Job("timeout_check", "hourly", fn=self._job_timeouts),
+            Job("contract_expiry", "daily", at="08:30", fn=self._job_contract_expiry),
         ]
         self.scheduler = Scheduler(jobs)
         start_background(self.scheduler)
