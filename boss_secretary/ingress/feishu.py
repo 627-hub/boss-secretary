@@ -21,7 +21,7 @@ from typing import Any, Mapping, Sequence
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
-                                 GetFileRequest, GetImageRequest,
+                                 GetMessageResourceRequest,
                                  ReplyMessageRequest, ReplyMessageRequestBody)
 
 from boss_secretary.core import compliance as C
@@ -157,7 +157,7 @@ class SecretaryBot:
                           .content(json.dumps({"text": text}, ensure_ascii=False)).build()) \
             .build()
         resp = self._client().im.v1.message.create(req)
-        if not resp.success:
+        if not resp.success():
             print(f"[feishu] 发送失败 {resp.code}: {resp.msg} | 收件人 {open_id}")
         else:
             print(f"[feishu] 已回复 {open_id}: {text[:60]!r}")
@@ -170,24 +170,25 @@ class SecretaryBot:
                           .content(json.dumps(card, ensure_ascii=False)).build()) \
             .build()
         resp = self._client().im.v1.message.create(req)
-        if not resp.success:
+        if not resp.success():
             print(f"[feishu] 卡片发送失败 {resp.code}: {resp.msg}")
 
-    def download_image(self, image_key: str, message_id: str = "") -> bytes | None:
-        req = GetImageRequest.builder().image_key(image_key).build()
-        resp = self._client().im.v1.image.get(req)
-        if not resp.success:
-            print(f"[feishu] 图片下载失败 {resp.code}: {resp.msg}")
+    def download_resource(self, file_key: str, message_id: str,
+                          rtype: str) -> bytes | None:
+        req = GetMessageResourceRequest.builder() \
+            .message_id(message_id).file_key(file_key).type(rtype).build()
+        resp = self._client().im.v1.message_resource.get(req)
+        if not resp.success():
+            print(f"[feishu] 资源下载失败({rtype}) {resp.code}: {resp.msg}")
             return None
-        return resp.file
+        f = resp.file
+        return f.read() if hasattr(f, "read") else f
 
-    def download_file(self, file_key: str, message_id: str = "") -> bytes | None:
-        req = GetFileRequest.builder().file_key(file_key).build()
-        resp = self._client().im.v1.file.get(req)
-        if not resp.success:
-            print(f"[feishu] 文件下载失败 {resp.code}: {resp.msg}")
-            return None
-        return resp.file
+    def download_image(self, image_key: str, message_id: str) -> bytes | None:
+        return self.download_resource(image_key, message_id, "image")
+
+    def download_file(self, file_key: str, message_id: str) -> bytes | None:
+        return self.download_resource(file_key, message_id, "file")
 
     # ── 员工档案 ──────────────────────────────────────────────
     def get_or_create_employee(self, open_id: str) -> dict:
