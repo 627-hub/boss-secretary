@@ -44,3 +44,9 @@ allowances:
 
 budgets:
   block_over: false
+
+# 发票验真：provider=none 仅本地形式验真+二维码交叉核验（免费）；
+# 接第三方付费接口（百望/票易通等）时改 provider 并补 api_key
+invoice_verify:
+  provider: none
+  api_key: ""
