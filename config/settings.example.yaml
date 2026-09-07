@@ -37,3 +37,7 @@ matrix:
 storage:
   db_path: "data/secretary.db"
   audit_dir: "data/audit"
+
+allowances:
+  max_manager_grant: 1000
+  default_expire_days: 30

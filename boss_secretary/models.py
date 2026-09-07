@@ -96,6 +96,22 @@ CREATE TABLE IF NOT EXISTS anomalies(
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS allowances(
+  allowance_id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  created_by TEXT,
+  approver_role TEXT,
+  category TEXT,
+  total_amount REAL NOT NULL,
+  used_amount REAL DEFAULT 0,
+  expense_types TEXT,
+  max_single REAL,
+  reason TEXT,
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  expires_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT DEFAULT (datetime('now','localtime')),
@@ -124,6 +140,11 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(DDL)
+    for stmt in ("ALTER TABLE tickets ADD COLUMN allowance_id TEXT",):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     return conn
 

@@ -24,6 +24,7 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                  GetMessageResourceRequest,
                                  ReplyMessageRequest, ReplyMessageRequestBody)
 
+from boss_secretary.core import allowance as AL
 from boss_secretary.core import compliance as C
 from boss_secretary.core import extract as E
 from boss_secretary.core import llm as L
@@ -268,6 +269,7 @@ class SecretaryBot:
         tid = self.router.create_ticket(ctx, emp)
         print(f"[feishu] 已建单 {tid}")
         rule_results = C.run_rules(ctx, self.store.history(ctx))
+        summary = C.summarize(rule_results)
         try:
             rv = E.review_with_llm(ctx, rule_results, settings=self.settings)
             print(f"[feishu] LLM 审查: {rv['verdict']} conf={rv['confidence']} "
@@ -276,6 +278,16 @@ class SecretaryBot:
             print(f"[feishu] LLM 审查不可用: {e}")
             rv = {"verdict": C.WARN, "confidence": 0.0,
                   "evidence": [f"LLM 审查不可用: {e}"], "suggestions": []}
+        blocked = summary["overall"] == C.FAIL or rv["verdict"] == C.FAIL
+        al, over = AL.match(self.store.conn, emp["user_id"], ctx)
+        if al and over <= 0 and not blocked:
+            self.router.allowance_auto_approve(tid, al["allowance_id"])
+            rem = AL.consume(self.store.conn, al["allowance_id"],
+                             float(ctx.get("amount") or 0))
+            self._after_review(tid, R.ReviewOutcome(
+                tuple(rule_results), summary, None, R.AUTO_APPROVED, (), "", ()))
+            return (f"✅ 额度内核销（{al['allowance_id']}：{ctx.get('amount')}元，"
+                    f"额度余 {rem} 元）。已提交财务打款；如有异议回复「撤回 {tid}」")
         outcome = self.router.run_review(tid, llm_verdict=rv["verdict"])
         self._after_review(tid, outcome)
         if outcome.next_status == R.AUTO_APPROVED:
@@ -302,6 +314,44 @@ class SecretaryBot:
         lines = [f"{tid}  {st}  {amt if amt is not None else '-'}元"
                  for tid, st, amt in rows]
         return "\n".join(["你的报销单："] + lines)
+
+    def _allowance_request(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        parsed = AL.extract_allowance(text, settings=self.settings)
+        if not parsed.get("amount"):
+            return "请说明额度金额，例如：申请打车额度200元，今晚加班打车用"
+        req = AL.create_request(self.store.conn, emp["user_id"],
+                                parsed["category"], float(parsed["amount"]),
+                                reason=parsed.get("reason", ""),
+                                created_by=sender_open_id,
+                                expense_types=parsed.get("expense_types", ()),
+                                cfg=self.settings.get("allowances"))
+        role = req["required_role"]
+        uid = self.roles.get(role)
+        if not uid:
+            return f"额度申请 {req['allowance_id']} 已记录，但审批人 {role} 未配置 open_id"
+        card = {"config": {"wide_screen_mode": True},
+                "header": {"template": "purple",
+                           "title": {"tag": "plain_text",
+                                     "content": f"额度审批 {req['allowance_id']}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md",
+                                            "content": f"**员工**：{emp['user_id']}\n"
+                                                       f"**类型**：{req['category']}\n"
+                                                       f"**额度**：{req['amount']} 元\n"
+                                                       f"**用途**：{req['reason'] or '-'}\n"
+                                                       f"**有效期**：{req['expires_at']}"}},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "批准"},
+                         "type": "primary",
+                         "value": {"action": "allowance_approve",
+                                   "allowance_id": req["allowance_id"]}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "拒绝"},
+                         "type": "danger",
+                         "value": {"action": "allowance_reject",
+                                   "allowance_id": req["allowance_id"]}}]}]}
+        self.send_card(uid, card)
+        return (f"额度申请已提交 {req['allowance_id']}（{req['category']} "
+                f"{req['amount']} 元），等待 {role} 审批；生效后在此额度内报销免逐单审批")
 
     def _submit(self, sender_open_id: str, emp: Mapping, text: str) -> str:
         print(f"[feishu] 抽取开始 sender={sender_open_id} text={text[:40]!r}")
@@ -369,6 +419,10 @@ class SecretaryBot:
                 return f"打款确认失败: {e}"
         if text in ("进度", "我的报销", "查进度"):
             return self._progress(sender_open_id)
+        if text in ("额度", "我的额度"):
+            return AL.to_table(AL.list_for(self.store.conn, sender_open_id))
+        if any(k in text for k in ("额度", "备用金", "预算")):
+            return self._allowance_request(sender_open_id, emp, text)
         if text in ("取消", "不报了"):
             self._pending.pop(sender_open_id, None)
             return "已放弃当前待补单据"
@@ -395,6 +449,20 @@ class SecretaryBot:
             if action == "reject":
                 self.router.reject(ticket_id, open_id, role, "卡片驳回")
                 return "已驳回"
+            if action in ("allowance_approve", "allowance_reject"):
+                a = AL.decide(self.store.conn, value.get("allowance_id"),
+                              open_id, approve=(action == "allowance_approve"))
+                if a is None:
+                    return "额度申请不存在或已处理"
+                if a["status"] == AL.ACTIVE:
+                    self.send_text(a["employee_id"],
+                                   f"✅ 额度已生效 {a['allowance_id']}：{a['category']} "
+                                   f"{a['total_amount']} 元（至 {str(a['expires_at'])[:10]}）。"
+                                   f"在此额度内报销免逐单审批")
+                    return f"已批准 {a['allowance_id']}"
+                self.send_text(a["employee_id"],
+                               f"额度申请 {a['allowance_id']} 未获批准")
+                return "已拒绝"
             if action == "paid":
                 if self.roles.get("finance") and open_id != self.roles["finance"]:
                     return "仅财务可确认打款"

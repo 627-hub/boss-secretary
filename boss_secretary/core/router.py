@@ -447,6 +447,28 @@ class Router:
                     from_ticket=original_id)
         return new_id
 
+    def allowance_auto_approve(self, ticket_id: str, allowance_id: str,
+                               actor_note: str = "额度内核销") -> str:
+        """额度内报销免逐单审批：审查已过（调用方保证），直接核销并终到待打款。"""
+        t = self.store.get(ticket_id)
+        if t is None:
+            raise RouterError(f"单据不存在: {ticket_id}")
+        if t["status"] not in (DRAFT, REVIEWING, SUBMITTED):
+            raise TransitionError(f"状态 {t['status']} 不可核销")
+        if t["status"] == DRAFT:
+            self._transition(ticket_id, DRAFT, REVIEWING, "system", "额度核销审查")
+        elif t["status"] == SUBMITTED:
+            pass
+        else:
+            self._transition(ticket_id, t["status"], REVIEWING, "system", "额度核销审查")
+        self.store.update(ticket_id, allowance_id=allowance_id,
+                          ai_verdict="ALLOWANCE",
+                          approvals=[{"role": "allowance", "user_id": allowance_id}])
+        self._transition(ticket_id, self.store.get(ticket_id)["status"],
+                         AUTO_APPROVED, "system", actor_note)
+        self._notify("ticket.auto_approved", self.store.get(ticket_id) or {}, [])
+        return AUTO_APPROVED
+
     def check_timeouts(self, now: dt.datetime | None = None) -> list[str]:
         now = now or dt.datetime.now()
         deadline = now - dt.timedelta(hours=self.flow.timeout_hours)
