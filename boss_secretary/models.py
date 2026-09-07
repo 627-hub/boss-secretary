@@ -171,6 +171,32 @@ CREATE TABLE IF NOT EXISTS seal_requests(
   used_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS trips(
+  trip_id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  dept_id TEXT,
+  destination TEXT,
+  reason TEXT,
+  estimate REAL,
+  start_date TEXT,
+  end_date TEXT,
+  status TEXT DEFAULT 'pending',
+  approver TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS loans(
+  loan_id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  amount REAL NOT NULL,
+  repaid_amount REAL DEFAULT 0,
+  reason TEXT,
+  status TEXT DEFAULT 'pending',
+  approver TEXT,
+  paid_out_at TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS suppliers(
   supplier_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
