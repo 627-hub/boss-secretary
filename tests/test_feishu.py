@@ -205,3 +205,16 @@ def test_pdf_signature_detection(bot, monkeypatch):
                                             "e_signature": True})
     out = bot.handle_file("ou_emp1", "fk", "om_f", "发票.pdf")
     assert "电子签章" in out
+
+
+def test_card_action_paid(bot):
+    reply = bot.handle_text("ou_emp1", "9月5号打车300块")
+    tid = F.TICKET_ID_RE.search(reply).group(0)
+    bot.on_card_action("ou_m1", {"action": "approve", "ticket_id": tid, "role": "manager"})
+    out = bot.on_card_action("ou_f1", {"action": "paid", "ticket_id": tid,
+                                       "role": "finance"})
+    assert "已确认打款" in out
+    assert bot.store.get(tid)["status"] == "PAID"
+    out2 = bot.on_card_action("ou_m1", {"action": "paid", "ticket_id": tid,
+                                        "role": "finance"})
+    assert "仅财务" in out2

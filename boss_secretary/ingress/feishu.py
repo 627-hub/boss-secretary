@@ -395,6 +395,11 @@ class SecretaryBot:
             if action == "reject":
                 self.router.reject(ticket_id, open_id, role, "卡片驳回")
                 return "已驳回"
+            if action == "paid":
+                if self.roles.get("finance") and open_id != self.roles["finance"]:
+                    return "仅财务可确认打款"
+                self.router.mark_paid(ticket_id, open_id, "finance")
+                return "✅ 已确认打款，单据关闭"
             return f"未知动作: {action}"
         except R.RouterError as e:
             return f"操作失败: {e}"
