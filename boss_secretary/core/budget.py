@@ -10,7 +10,9 @@ CLI: 无（经 boss-feishu 命令 `预算`）。
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Mapping
+import re
+from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 COUNTED = ("APPROVED", "PAID", "AUTO_APPROVED", "SUBMITTED", "ESCALATED")
 ALL_DEPT = "*"
@@ -102,3 +104,107 @@ def parse_budget_text(text: str) -> dict | None:
                     "amount": float(m.group(3))}
         return {"action": "query", "dept": dept, "month": month}
     return {"action": "overview", "month": None}
+
+
+# ─────────────────────── Excel 批量导入 ───────────────────────
+
+SHEET_NAME = "预算"
+_HEADERS = ("部门", "月份", "预算金额(元)")
+_TITLE = "预算批量导入（每月一行；部门 * = 全司；月份 YYYY-MM）"
+
+
+def export_template(path, samples: Sequence[Mapping] | None = None) -> Path:
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_NAME
+    ws["A1"] = _TITLE
+    ws.append(list(_HEADERS))
+    for row in (samples or [
+        {"dept": "D1", "month": "2026-09", "amount": 50000},
+        {"dept": "D2", "month": "2026-09", "amount": 30000},
+        {"dept": "*", "month": "2026-09", "amount": 100000},
+    ]):
+        ws.append([row["dept"], row["month"], row["amount"]])
+    for col, w in (("A", 14), ("B", 14), ("C", 18)):
+        ws.column_dimensions[col].width = w
+    wb.save(path)
+    return Path(path)
+
+
+def read_xlsx(path) -> list[dict]:
+    from openpyxl import load_workbook
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"文件不存在: {p}")
+    wb = load_workbook(p, data_only=True, read_only=True)
+    if SHEET_NAME not in wb.sheetnames:
+        raise ValueError(f"缺少工作表「{SHEET_NAME}」（用 template 生成模板）")
+    ws = wb[SHEET_NAME]
+    rows, errors = [], []
+    header_seen = False
+    for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+        vals = [str(v).strip() if v is not None else "" for v in row] if row else []
+        if not any(vals):
+            continue
+        if not header_seen and vals[:3] == list(_HEADERS):
+            header_seen = True
+            continue
+        if vals[0].startswith("预算批量导入"):
+            continue
+        if len(vals) < 3 or not vals[0] or not vals[1] or not vals[2]:
+            errors.append(f"第 {i} 行字段不全（部门/月份/金额）")
+            continue
+        dept, month, amt_s = vals[0], vals[1], vals[2].replace(",", "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            errors.append(f"第 {i} 行月份格式错误：{month}（应 YYYY-MM）")
+            continue
+        try:
+            amount = float(amt_s)
+        except ValueError:
+            errors.append(f"第 {i} 行金额不是数字：{amt_s}")
+            continue
+        if amount <= 0:
+            errors.append(f"第 {i} 行金额须为正数：{amount}")
+            continue
+        rows.append({"dept": dept, "month": month, "amount": amount, "row": i})
+    if not header_seen and not rows:
+        raise ValueError("未找到表头行（部门/月份/预算金额(元)）")
+    return rows + [] if not errors else (_ for _ in ()).throw(ValueError("；".join(errors)))
+
+
+def import_budgets(conn, path, operator: str = "") -> dict:
+    rows = read_xlsx(path)
+    n_set = 0
+    for r in rows:
+        set_budget(conn, r["dept"], r["month"], r["amount"], created_by=operator)
+        n_set += 1
+    return {"imported": n_set, "rows": rows}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    p = argparse.ArgumentParser(prog="boss_secretary.budget")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    imp = sub.add_parser("import", help="xlsx 批量导入（upsert）")
+    imp.add_argument("xlsx_path")
+    imp.add_argument("--db", default="data/secretary.db")
+    imp.add_argument("--operator", default="boss")
+    tpl = sub.add_parser("template", help="生成 Excel 模板")
+    tpl.add_argument("--out", default="config/budgets.xlsx")
+    args = p.parse_args(argv)
+    if args.cmd == "template":
+        print(f"模板已生成: {export_template(args.out)}")
+        return 0
+    import sqlite3
+    conn = sqlite3.connect(args.db, check_same_thread=False)
+    result = import_budgets(conn, args.xlsx_path, operator=args.operator)
+    print(f"导入 {result['imported']} 条：")
+    for r in result["rows"]:
+        print(f"  {r['dept']:<6} {r['month']} {r['amount']:.0f} 元")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

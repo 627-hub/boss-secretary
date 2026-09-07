@@ -26,6 +26,7 @@ boss-compliance = "boss_secretary.core.compliance:main"
 boss-anomaly = "boss_secretary.core.anomaly:main"
 boss-daily = "boss_secretary.report.daily:main"
 boss-models = "boss_secretary.models:main"
+boss-budget = "boss_secretary.budget:main"
 
 [tool.setuptools.packages.find]
 include = ["boss_secretary*"]

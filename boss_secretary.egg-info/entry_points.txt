@@ -1,5 +1,6 @@
 [console_scripts]
 boss-anomaly = boss_secretary.core.anomaly:main
+boss-budget = boss_secretary.budget:main
 boss-compliance = boss_secretary.core.compliance:main
 boss-daily = boss_secretary.report.daily:main
 boss-feishu = boss_secretary.feishu:main

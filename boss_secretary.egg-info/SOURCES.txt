@@ -1,7 +1,9 @@
 README.md
 pyproject.toml
 boss_secretary/__init__.py
+boss_secretary/allowance.py
 boss_secretary/anomaly.py
+boss_secretary/budget.py
 boss_secretary/compliance.py
 boss_secretary/extract.py
 boss_secretary/feishu.py
@@ -16,7 +18,9 @@ boss_secretary.egg-info/requires.txt
 boss_secretary.egg-info/top_level.txt
 boss_secretary/adapters/__init__.py
 boss_secretary/core/__init__.py
+boss_secretary/core/allowance.py
 boss_secretary/core/anomaly.py
+boss_secretary/core/budget.py
 boss_secretary/core/compliance.py
 boss_secretary/core/extract.py
 boss_secretary/core/llm.py
@@ -24,13 +28,16 @@ boss_secretary/core/matrix.py
 boss_secretary/core/matrix_import.py
 boss_secretary/core/perm.py
 boss_secretary/core/router.py
+boss_secretary/core/scheduler.py
 boss_secretary/core/secrets.py
 boss_secretary/finance/__init__.py
 boss_secretary/ingress/__init__.py
 boss_secretary/ingress/feishu.py
 boss_secretary/report/__init__.py
 boss_secretary/report/daily.py
+tests/test_allowance.py
 tests/test_anomaly.py
+tests/test_budget_scheduler.py
 tests/test_compliance.py
 tests/test_daily.py
 tests/test_extract.py
