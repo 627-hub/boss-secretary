@@ -27,9 +27,11 @@ class Job:
 
 
 class Scheduler:
-    def __init__(self, jobs: list[Job], state_path: str | Path = DEFAULT_STATE):
+    def __init__(self, jobs: list[Job], state_path: str | Path = DEFAULT_STATE,
+                 heartbeat_path: str | Path = "data/heartbeat"):
         self.jobs = jobs
         self.state_path = Path(state_path)
+        self.heartbeat_path = Path(heartbeat_path)
         self._load()
 
     def _load(self) -> None:
@@ -62,6 +64,12 @@ class Scheduler:
 
     def tick(self, now: dt.datetime | None = None) -> list[str]:
         now = now or dt.datetime.now()
+        try:
+            self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            self.heartbeat_path.write_text(now.isoformat(timespec="seconds"),
+                                           encoding="utf-8")
+        except OSError:
+            pass
         ran = []
         for job in self.jobs:
             if not self.due(job, now):

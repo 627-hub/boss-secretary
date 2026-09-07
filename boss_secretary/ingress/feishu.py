@@ -1398,6 +1398,16 @@ class SecretaryBot:
                     self.send_file(boss, result[key], file_type=ft)
         return f"月报 {month} 已生成并发送"
 
+    def _job_backup(self) -> str:
+        from boss_secretary.core import backup as BK
+        b = self.settings.get("backup") or {}
+        r = BK.backup(self.settings.get("storage", {}).get("db_path",
+                      "data/secretary.db"), out_dir="data/backups",
+                      keep=int(b.get("keep", 14)), dest_dir=b.get("dest_dir") or None,
+                      items=b.get("items") or ["data/audit", "data/attachments",
+                                               "data/reports"])
+        return f"备份 {r['size'] // 1024} KB，保留 {r['kept']} 份"
+
     def _job_contract_expiry(self) -> str:
         days = int((self.settings.get("contracts") or {}).get("expiry_warn_days", 30))
         expiring = CT.expiring(self.store.conn, days=days)
@@ -1430,6 +1440,7 @@ class SecretaryBot:
             Job("allowance_expire", "daily", at="08:00", fn=self._job_expire),
             Job("timeout_check", "hourly", fn=self._job_timeouts),
             Job("contract_expiry", "daily", at="08:30", fn=self._job_contract_expiry),
+            Job("backup", "daily", at="03:00", fn=self._job_backup),
         ]
         self.scheduler = Scheduler(jobs)
         start_background(self.scheduler)
