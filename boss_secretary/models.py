@@ -145,6 +145,32 @@ CREATE TABLE IF NOT EXISTS payments(
   paid_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS seals(
+  seal_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  custodian TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS seal_requests(
+  request_id TEXT PRIMARY KEY,
+  seal_id TEXT NOT NULL,
+  seal_name TEXT,
+  applicant TEXT NOT NULL,
+  doc_title TEXT NOT NULL,
+  doc_type TEXT,
+  copies INTEGER DEFAULT 1,
+  reason TEXT,
+  contract_id TEXT,
+  status TEXT DEFAULT 'pending',
+  approver TEXT,
+  self_approved INTEGER DEFAULT 0,
+  evidence_file TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  used_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS suppliers(
   supplier_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

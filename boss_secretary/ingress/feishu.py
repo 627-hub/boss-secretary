@@ -27,6 +27,7 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
 
 from boss_secretary.core import allowance as AL
 from boss_secretary.core import budget as BG
+from boss_secretary.core import seal as SL
 from boss_secretary.core import compliance as C
 from boss_secretary.core import audit as AU
 from boss_secretary.core import contract as CT
@@ -703,6 +704,104 @@ class SecretaryBot:
             return f"⚠ {r['detail']}"
         return None
 
+    def seal_card(self, rid: str, seal_name: str, doc_title: str, copies: int,
+                  applicant: str, note: str = "") -> dict:
+        return {"config": {"wide_screen_mode": True},
+                "header": {"template": "red",
+                           "title": {"tag": "plain_text",
+                                     "content": f"用印审批 {rid}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md",
+                                            "content": f"**印章**：{seal_name}\n"
+                                                       f"**文件**：{doc_title}\n"
+                                                       f"**份数**：{copies}\n"
+                                                       f"**申请人**：{applicant}"
+                                                       + (f"\n**备注**：{note}" if note else "")}},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text",
+                                                   "content": "批准用印"},
+                         "type": "primary",
+                         "value": {"action": "seal_approve", "request_id": rid}},
+                        {"tag": "button", "text": {"tag": "plain_text",
+                                                   "content": "拒绝"},
+                         "type": "danger",
+                         "value": {"action": "seal_reject", "request_id": rid}}]}]}
+
+    def _seal_command(self, sender_open_id: str, text: str) -> str:
+        if text == "建章":
+            if sender_open_id != self.roles.get("boss"):
+                return "仅老板可初始化印章"
+            return "用法：建章 印章名称（如：建章 公司公章）"
+        if text.startswith("建章 "):
+            if sender_open_id != self.roles.get("boss"):
+                return "仅老板可初始化印章"
+            name = text.replace("建章", "").strip()
+            if not name:
+                return "请输入印章名称，如：建章 公司公章"
+            seal = SL.create_seal(self.store.conn, name=name,
+                                  custodian=self.roles.get("boss") or sender_open_id)
+            return f"印章已建：{name}（{seal['seal_id']}，保管人=老板）"
+        if text in ("用印台账",):
+            is_priv = sender_open_id in (self.roles.get("audit"),
+                                         self.roles.get("boss"))
+            rows = SL.list_requests(self.store.conn,
+                                    applicant=None if is_priv else sender_open_id)
+            return SL.to_table(rows)
+        if text.startswith("用印"):
+            # 用印申请 公章 XX销售合同 2份 关联C-xxx
+            m = re.match(r"用印(?:申请)?\s*(\S+)\s+(\S+?)(?:\s*(\d+)份)?"
+                         r"(?:\s*关联\s*(C\d{8}-[0-9A-F]{6}))?\s*$", text)
+            if not m:
+                return ("用法：用印申请 公章 XX销售合同 2份 [关联C-xxx]\n"
+                        "可用印章：" + "、".join(sl["name"] for sl in
+                                                SL.seal_list(self.store.conn)) or "-")
+            seal = SL.find_seal_by_name(self.store.conn, m.group(1))
+            if not seal:
+                return f"印章「{m.group(1)}」不存在或未启用（建章 印章名称 初始化）"
+            try:
+                r = SL.request(
+                    self.store.conn, seal_id=seal["seal_id"],
+                    applicant=sender_open_id, doc_title=m.group(2),
+                    doc_type="合同" if "合同" in m.group(2) else "其他",
+                    copies=int(m.group(3) or 1), reason="",
+                    contract_id=m.group(4))
+            except ValueError as e:
+                return f"⛔ {e}"
+            role = r["approver_role"]
+            uid = self.roles.get(role)
+            if not uid:
+                return f"用印申请 {r['request_id']} 已记录，但审批人 {role} 未配置"
+            if uid == sender_open_id:
+                self.send_card(uid, self.seal_card(
+                    r["request_id"], seal["name"], m.group(2),
+                    int(m.group(3) or 1), sender_open_id,
+                    note="⚠ 申请人与审批人相同（自批），已在台账标注"))
+            else:
+                self.send_card(uid, self.seal_card(
+                    r["request_id"], seal["name"], m.group(2),
+                    int(m.group(3) or 1), sender_open_id))
+            return (f"用印申请 {r['request_id']} 已提交（{seal['name']}，"
+                    f"{m.group(2)} ×{int(m.group(3) or 1)}），等待 {role} 审批")
+        if text.startswith("用印 ") and "已用" in text:
+            m = re.search(r"Y\d{8}-[0-9A-F]{6}", text)
+            if not m:
+                return "用法：用印 Y20260907-XXXXXX 已用"
+            seal_name = None
+            try:
+                r = SL.get_request(self.store.conn, m.group(0))
+                seal_name = r and r["seal_name"]
+                role = SL.approver_role_for(seal_name or "")
+                if sender_open_id not in (self.roles.get(role),
+                                          self.roles.get("boss"),
+                                          r["applicant"]):
+                    return "仅审批人/保管人/申请人可确认用印完成"
+                SL.mark_used(self.store.conn, m.group(0), sender_open_id)
+            except ValueError as e:
+                return f"确认失败: {e}"
+            return f"✅ {m.group(0)} 已确认用印，台账留痕"
+        return ("用印命令：用印申请 印章名 文件名 [N份] [关联C-xxx] | "
+                "用印 Y-xxx 已用 | 用印台账 | 建章 印章名（老板）")
+
     def _supplier_command(self, sender_open_id: str, text: str) -> str:
         privileged = sender_open_id in (self.roles.get("boss"), self.roles.get("finance"))
         audit_ok = sender_open_id in (self.roles.get("audit"), self.roles.get("boss"))
@@ -936,6 +1035,8 @@ class SecretaryBot:
         if text.startswith("供应商") or text.startswith("拉黑") \
                 or text.startswith("变更账户") or text.startswith("移出黑名单"):
             return self._supplier_command(sender_open_id, text)
+        if text.startswith("用印") or text.startswith("建章"):
+            return self._seal_command(sender_open_id, text)
         audit_cmds = ("审计", "抽检", "回放", "误报", "属实", "风险名单")
         if text.startswith(audit_cmds):
             if sender_open_id not in (self.roles.get("audit"), self.roles.get("boss")):
@@ -1044,6 +1145,34 @@ class SecretaryBot:
                     return f"已批准 {a['allowance_id']}"
                 self.send_text(a["employee_id"],
                                f"额度申请 {a['allowance_id']} 未获批准")
+                return "已拒绝"
+            if action in ("seal_approve", "seal_reject"):
+                rid = value.get("request_id")
+                r = SL.get_request(self.store.conn, rid)
+                if r is None:
+                    return f"用印申请不存在: {rid}"
+                seal = SL.get_seal(self.store.conn, r["seal_id"])
+                expected = SL.approver_role_for(seal["name"]) if seal else "boss"
+                allowed = [self.roles.get(expected), self.roles.get("boss"),
+                           r["applicant"]]
+                if open_id not in [u for u in allowed if u]:
+                    return f"仅 {expected} 可审批该用印申请"
+                if r["applicant"] == open_id:
+                    note = "自批"
+                else:
+                    note = ""
+                try:
+                    rr = SL.decide(self.store.conn, rid, open_id,
+                                   approve=(action == "seal_approve"), note=note)
+                except ValueError as e:
+                    return f"审批失败: {e}"
+                if rr["status"] == SL.APPROVED:
+                    self.send_text(r["applicant"],
+                                   f"✅ 用印已批准 {rid}（{r['seal_name']}），"
+                                   f"用印完成后回复「用印 {rid} 已用」登记台账")
+                    return f"已批准（用印完成后申请人回复「用印 {rid} 已用」登记）"
+                if r.get("applicant"):
+                    self.send_text(r["applicant"], f"用印申请 {rid} 被拒绝")
                 return "已拒绝"
             if action in ("supplier_approve", "supplier_reject"):
                 sid = value.get("supplier_id")
