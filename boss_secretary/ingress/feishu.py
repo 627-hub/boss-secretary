@@ -71,6 +71,7 @@ class SecretaryBot:
             self.router = R.Router(flow, mx, self.store, rules_cfg,
                                    role_resolvers=resolvers)
         self.roles = (s.get("feishu") or {}).get("roles") or {}
+        self._pending: dict[str, dict] = {}
         self.settings_path = settings_path
 
     # ── 飞书 API ──────────────────────────────────────────────
@@ -90,7 +91,9 @@ class SecretaryBot:
             .build()
         resp = self._client().im.v1.message.create(req)
         if not resp.success:
-            print(f"[feishu] 发送失败 {resp.code}: {resp.msg}")
+            print(f"[feishu] 发送失败 {resp.code}: {resp.msg} | 收件人 {open_id}")
+        else:
+            print(f"[feishu] 已回复 {open_id}: {text[:60]!r}")
 
     def send_card(self, open_id: str, card: dict) -> None:
         req = CreateMessageRequest.builder() \
@@ -124,12 +127,16 @@ class SecretaryBot:
         if m and ("撤回" in text or "作废" in text):
             try:
                 self.router.withdraw(m.group(0), sender_open_id)
+                self._pending.pop(sender_open_id, None)
                 return f"已撤回 {m.group(0)}"
             except R.RouterError as e:
                 return f"撤回失败: {e}"
         if text in ("进度", "我的报销", "查进度"):
             return self._progress(sender_open_id)
-        return self._submit(emp, text)
+        if text in ("取消", "不报了"):
+            self._pending.pop(sender_open_id, None)
+            return "已放弃当前待补单据"
+        return self._submit(sender_open_id, emp, text)
 
     def _progress(self, open_id: str) -> str:
         rows = self.store.conn.execute(
@@ -141,21 +148,36 @@ class SecretaryBot:
                  for tid, st, amt in rows]
         return "\n".join(["你的报销单："] + lines)
 
-    def _submit(self, emp: Mapping, text: str) -> str:
+    def _submit(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        print(f"[feishu] 抽取开始 sender={sender_open_id} text={text[:40]!r}")
         try:
             ctx = E.extract_ticket(text, settings=self.settings)
         except L.LLMError as e:
-            return f"解析失败（AI 抽取）: {e}"
+            print(f"[feishu] 抽取失败: {e}")
+            return f"解析失败（AI 抽取）: {str(e)[:120]}"
+        print(f"[feishu] 抽取结果: {ctx}")
+        pending = self._pending.get(sender_open_id)
+        now = time.time()
+        if pending and now - pending["ts"] > 600:
+            pending = None
+        if pending:
+            ctx = {**pending["ctx"], **{k: v for k, v in ctx.items() if v not in (None, "")}}
         missing = E.missing_required(ctx)
         if missing:
+            self._pending[sender_open_id] = {"ctx": ctx, "ts": now}
             name_map = {"amount": "金额", "occurred_at": "发生日期", "reason": "事由",
                         "expense_type": "费用类型", "invoice_no": "发票号"}
-            return "请补充：" + "、".join(name_map.get(k, k) for k in missing)
+            return "请补充：" + "、".join(name_map.get(k, k) for k in missing) + \
+                   "（回复内容将自动并入；输入「取消」放弃）"
+        self._pending.pop(sender_open_id, None)
         tid = self.router.create_ticket(ctx, emp)
+        print(f"[feishu] 已建单 {tid}")
         rule_results = C.run_rules(ctx, self.store.history(ctx))
         try:
             rv = E.review_with_llm(ctx, rule_results, settings=self.settings)
+            print(f"[feishu] LLM 审查: {rv['verdict']} conf={rv['confidence']}")
         except L.LLMError as e:
+            print(f"[feishu] LLM 审查不可用: {e}")
             rv = {"verdict": C.WARN, "confidence": 0.0,
                   "evidence": [f"LLM 审查不可用: {e}"], "suggestions": []}
         outcome = self.router.run_review(tid, llm_verdict=rv["verdict"])
@@ -165,8 +187,7 @@ class SecretaryBot:
             return f"✅ 已自动通过（{tid}，{ctx.get('amount')}元）。如有异议回复「撤回 {tid}」"
         if status_s == R.REJECTED:
             return f"❌ 单据 {tid} 未通过：{'; '.join(rv['suggestions']) or '见规则审查'}"
-        pend = [r for r in outcome.approver_roles]
-        return f"已受理 {tid}（{ctx.get('amount')}元），进入审批：{'、'.join(pend) or '-'}"
+        return f"已受理 {tid}（{ctx.get('amount')}元），进入审批：{'、'.join(outcome.approver_roles) or '-'}"
 
     def _after_review(self, ticket_id: str, outcome: R.ReviewOutcome) -> None:
         t = self.store.get(ticket_id) or {}
