@@ -33,6 +33,7 @@ from boss_secretary.core import contract as CT
 from boss_secretary.core import invoice_verify as IV
 from boss_secretary.core import extract as E
 from boss_secretary.core import specs as SP
+from boss_secretary.core import supplier as SUP
 from boss_secretary.core import llm as L
 from boss_secretary.core import matrix as M
 from boss_secretary.core import router as R
@@ -470,6 +471,9 @@ class SecretaryBot:
         print(f"[feishu] 采购抽取结果: {ctx}")
         if not ctx.get("amount") or not ctx.get("title"):
             return "请补充采购标的和金额，例如：采购测试服务器 8000 元，供应商 XX 电脑"
+        gate = self._supplier_gate(ctx.get("supplier"))
+        if gate and gate.startswith("⛔"):
+            return gate
         ctx.setdefault("attachments", [])
         self._pending[sender_open_id] = {"kind": "procurement", "ctx": ctx,
                                          "ts": time.time()}
@@ -532,6 +536,9 @@ class SecretaryBot:
             return f"合同要素解析失败: {str(e)[:120]}"
         print(f"[feishu] 合同抽取结果: {c}")
         c.setdefault("attachments", [])
+        gate = self._supplier_gate(c.get("supplier"))
+        if gate and gate.startswith("⛔"):
+            return gate
         missing = [k for k in spec.required_fields
                    if k not in ("amount",) and not c.get(k)]
         if not c.get("amount"):
@@ -633,6 +640,9 @@ class SecretaryBot:
         nm = re.search(r"(\d+(?:\.\d+)?)\s*元", text)
         if not nm:
             return "请说明金额，例如：付款 C20260907-XXXXXX 5000元 第一期"
+        gate = self._supplier_gate(c.get("supplier"))
+        if gate and gate.startswith("⛔"):
+            return gate
         note = text.replace(nm.group(0), "").replace(cm.group(0), "").strip()
         pid = CT.create_payment(self.store.conn, contract_id=cm.group(0),
                                 procurement_id=None, amount=float(nm.group(1)),
@@ -681,6 +691,131 @@ class SecretaryBot:
             return "\n".join(f"  {r['subject']} confirmed×{r['confirmed']}"
                              for r in rows)
         return "审计命令：审计/抽检/回放 T-xxx/误报 N/属实 N/风险名单"
+
+    def _supplier_gate(self, name: str | None) -> str | None:
+        """三道拦截闸: 返回 None=放行; 返回字符串=拦截原因。报销场景用 WARN 放行。"""
+        if not name:
+            return None
+        r = SUP.check_name(self.store.conn, name)
+        if r["level"] == "FAIL":
+            return f"⛔ {r['detail']}——已拦截"
+        if r["level"] == "WARN":
+            return f"⚠ {r['detail']}"
+        return None
+
+    def _supplier_command(self, sender_open_id: str, text: str) -> str:
+        privileged = sender_open_id in (self.roles.get("boss"), self.roles.get("finance"))
+        audit_ok = sender_open_id in (self.roles.get("audit"), self.roles.get("boss"))
+        parts = text.split()
+        sub = parts[0]
+        if sub == "供应商" and len(parts) == 1:
+            return SUP.to_table(SUP.list_all(self.store.conn))
+        if sub == "供应商列表":
+            st = parts[1] if len(parts) > 1 else None
+            return SUP.to_table(SUP.list_all(self.store.conn, status=st))
+        if sub == "供应商" and len(parts) >= 2:
+            m = re.search(r"S\d{8}-[0-9A-F]{6}", text)
+            if m:
+                c = SUP.get(self.store.conn, m.group(0))
+                if not c:
+                    return f"供应商不存在: {m.group(0)}"
+                chg = SUP.changes(self.store.conn, m.group(0))
+                chg_lines = "\n".join(f"  {x['at']} {x['by']} 改 {x['field']}: "
+                                       f"{str(x['old'])[:14]}→{str(x['new'])[:14]}"
+                                       for x in chg[:5]) or "  （无变更记录）"
+                return (f"{c['supplier_id']} [{c['status']}] {c['name']}\n"
+                        f"信用代码：{c.get('uscc') or '-'}\n"
+                        f"银行：{c.get('bank_name') or '-'} 尾号"
+                        f"{str(c.get('bank_account') or '')[-4:] or '-'}\n"
+                        f"变更记录：\n{chg_lines}")
+        if text.startswith("供应商登记"):
+            name = re.search(r"登记合同?\s*供应商\s*(\S+)", text) or \
+                   re.search(r"供应商登记\s+(\S+)", text)
+            nm = name.group(1) if name else None
+            if not nm:
+                return ("用法：供应商登记 XX有限公司 [信用代码] [联系人]\n"
+                        "银行账户信息请财务在审批通过后录入（变更需重审批）")
+            uscc = (re.search(r"(\d{18})", text) or (None, None))[1]
+            contact = None
+            try:
+                c = SUP.create_request(self.store.conn, name=nm, uscc=uscc,
+                                       reason="准入申请", created_by=sender_open_id)
+            except ValueError as e:
+                return str(e)
+            for role in ("finance", "boss"):
+                uid = self.roles.get(role)
+                if uid:
+                    self.send_card(uid, self.supplier_card(c["supplier_id"],
+                                                           nm, c.get("uscc")))
+            return f"供应商准入申请 {c['supplier_id']}（{nm}）已提交，等待 finance+boss 会签"
+        if text.startswith("变更账户"):
+            if not privileged:
+                return "仅财务/老板可发起账户变更"
+            m = re.search(r"S\d{8}-[0-9A-F]{6}", text)
+            fields = re.findall(r"(开户行|账号)\s*[:：]?\s*(\S+)", text)
+            if not m or not fields:
+                return "用法：变更账户 S20260907-XXXXXX 开户行:XX银行 账号:6222..."
+            sid = m.group(0)
+            for fname, val in fields:
+                field = "bank_name" if fname == "开户行" else "bank_account"
+                r = SUP.update_field(self.store.conn, sid, field, val,
+                                     changed_by=sender_open_id)
+                if r["re_review"]:
+                    for role in ("finance", "boss"):
+                        uid = self.roles.get(role)
+                        if uid:
+                            self.send_card(uid, self.supplier_card(
+                                sid, SUP.get(self.store.conn, sid)["name"], None))
+            return ("账户变更已记录（高危变更→重审批，卡片已重推）。"
+                    "审批通过前该供应商付款建议暂停")
+        if text.startswith("拉黑"):
+            if not audit_ok:
+                return "仅审计/老板可拉黑供应商"
+            m = re.search(r"S\d{8}-[0-9A-F]{6}", text)
+            reason = text.replace("拉黑", "").replace(m.group(0) if m else "", "").strip()
+            if not m:
+                return "用法：拉黑 S20260907-XXXXXX 原因"
+            try:
+                SUP.blacklist(self.store.conn, m.group(0), reason or "未说明",
+                              actor_id=sender_open_id)
+            except ValueError as e:
+                return str(e)
+            return f"⛔ 已拉黑 {m.group(0)}（{reason}）——采购/合同/付款全链路拦截生效"
+        if text.startswith("移出黑名单"):
+            if not audit_ok:
+                return "仅审计/老板可移出黑名单"
+            m = re.search(r"S\d{8}-[0-9A-F]{6}", text)
+            if not m:
+                return "用法：移出黑名单 S20260907-XXXXXX"
+            try:
+                SUP.unblacklist(self.store.conn, m.group(0), sender_open_id)
+            except ValueError as e:
+                return str(e)
+            return f"已移出黑名单 {m.group(0)}"
+        return "供应商命令：供应商 / 供应商列表 [状态] / 供应商登记 XX有限公司 / " \
+               "变更账户 S-xxx 开户行:X 账号:Y / 拉黑 S-xxx 原因 / 移出黑名单 S-xxx"
+
+    def supplier_card(self, sid: str, name: str, uscc: str | None) -> dict:
+        return {"config": {"wide_screen_mode": True},
+                "header": {"template": "indigo",
+                           "title": {"tag": "plain_text",
+                                     "content": f"供应商审批 {sid}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md",
+                                            "content": f"**供应商**：{name}\n"
+                                                       f"**信用代码**：{uscc or '-'}"
+                                                       f"\n（银行账户变更同样走本卡片重审批）"}},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text",
+                                                   "content": "批准"},
+                         "type": "primary",
+                         "value": {"action": "supplier_approve",
+                                   "supplier_id": sid}},
+                        {"tag": "button", "text": {"tag": "plain_text",
+                                                   "content": "拒绝"},
+                         "type": "danger",
+                         "value": {"action": "supplier_reject",
+                                   "supplier_id": sid}}]}]}
 
     def _budget_command(self, sender_open_id: str, text: str) -> str:
         parsed = BG.parse_budget_text(text)
@@ -766,6 +901,9 @@ class SecretaryBot:
                    "（回复内容将自动并入；输入「取消」放弃）"
         self._pending.pop(sender_open_id, None)
         issues = E.cross_check_invoice(ctx)
+        seller_gate = self._supplier_gate(ctx.get("invoice_seller"))
+        if seller_gate and seller_gate.startswith("⛔"):
+            issues.append(seller_gate.replace("⛔ ", ""))
         vr = self._last_verify.pop(sender_open_id, None)
         if vr:
             issues += [f"{i['rule']}: {i['detail']}" for i in vr["structural"] + vr["qr_issues"]
@@ -795,6 +933,9 @@ class SecretaryBot:
         text = (text or "").strip()
         if text.startswith("预算"):
             return self._budget_command(sender_open_id, text)
+        if text.startswith("供应商") or text.startswith("拉黑") \
+                or text.startswith("变更账户") or text.startswith("移出黑名单"):
+            return self._supplier_command(sender_open_id, text)
         audit_cmds = ("审计", "抽检", "回放", "误报", "属实", "风险名单")
         if text.startswith(audit_cmds):
             if sender_open_id not in (self.roles.get("audit"), self.roles.get("boss")):
@@ -904,6 +1045,28 @@ class SecretaryBot:
                 self.send_text(a["employee_id"],
                                f"额度申请 {a['allowance_id']} 未获批准")
                 return "已拒绝"
+            if action in ("supplier_approve", "supplier_reject"):
+                sid = value.get("supplier_id")
+                if action == "supplier_reject":
+                    try:
+                        SUP.reject(self.store.conn, sid, open_id)
+                    except ValueError as e:
+                        return str(e)
+                    return "准入已拒绝"
+                if open_id not in (self.roles.get("finance"), self.roles.get("boss")):
+                    return "仅 finance/boss 可审批供应商准入"
+                role = "boss" if open_id == self.roles.get("boss") else "finance"
+                try:
+                    st = SUP.approve(self.store.conn, sid, open_id, role)
+                except ValueError as e:
+                    return str(e)
+                if st == SUP.ACTIVE:
+                    c = SUP.get(self.store.conn, sid)
+                    if c.get("created_by"):
+                        self.send_text(c["created_by"],
+                                       f"✅ 供应商 {c['name']} 已准入生效")
+                    return f"✅ 供应商 {sid} 会签完成，已生效"
+                return f"已批准（等待 {'boss' if role == 'finance' else 'finance'} 会签）"
             if action in ("contract_approve", "contract_reject"):
                 cid = value.get("contract_id")
                 c = CT.get(self.store.conn, cid)

@@ -145,6 +145,32 @@ CREATE TABLE IF NOT EXISTS payments(
   paid_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS suppliers(
+  supplier_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  name_norm TEXT NOT NULL,
+  uscc TEXT,
+  contact TEXT,
+  bank_name TEXT,
+  bank_account TEXT,
+  status TEXT DEFAULT 'pending_review',
+  reason TEXT,
+  created_by TEXT,
+  approvers TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS supplier_changes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplier_id TEXT NOT NULL,
+  field TEXT NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  changed_by TEXT,
+  changed_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS budgets(
   dept_id TEXT NOT NULL,
   month TEXT NOT NULL,
