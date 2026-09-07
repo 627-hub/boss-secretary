@@ -44,6 +44,7 @@ def _ticket_rows(conn) -> list[dict]:
 
 def collect(conn, month: str) -> dict:
     now = dt.datetime.now()
+    _conn = conn
     tickets = _ticket_rows(conn)
     month_t = [t for t in tickets if (t.get("occurred_at") or "")[:7] == month]
 
@@ -84,7 +85,7 @@ def collect(conn, month: str) -> dict:
     budgets = [dict(zip(("dept", "amount"), r)) for r in conn.execute(
         "SELECT dept_id, amount FROM budgets WHERE month=?", (month,)).fetchall()]
     return {"month": month, "generated_at": now.isoformat(timespec="minutes"),
-            "tickets": tickets, "month_count": len(month_t),
+            "_conn": conn, "tickets": tickets, "month_count": len(month_t),
             "amount": amt(month_t), "paid_amount": round(
                 sum(float(t.get("amount") or 0) for t in month_t
                     if t.get("status") == "PAID"), 2),
@@ -207,6 +208,13 @@ def render_markdown(data: Mapping, images: Sequence[Path]) -> str:
             lines.append(f"- {a['allowance_id']} {a['employee_id']} "
                          f"{a['category']}：已用 {used:.0f}/{a['total_amount']:.0f} 元"
                          f"（{a['status']}）")
+    try:
+        from boss_secretary.core import audit as AU
+        appendix = AU.audit_appendix(conn, month) if hasattr(data.get("_conn"), "execute") else ""
+    except Exception:
+        appendix = ""
+    if appendix:
+        lines += ["", appendix]
     lines += ["", "> 口径说明：单据状态为当前快照；金额统计排除驳回/撤回/作废。",
               "> 本报告仅供内部管理参考，不构成审计意见。"]
     return "\n".join(lines)
@@ -239,6 +247,16 @@ def export_docx(data: Mapping, images: Sequence[Path], out: Path) -> Path:
         for a in data["anomalies"]:
             doc.add_paragraph(f"[{a['severity']}] {a['type']} {a['subject']}："
                               f"{str(a['evidence'])[:80]}")
+    try:
+        from boss_secretary.core import audit as AU
+        appendix = AU.audit_appendix(conn, data["month"])
+        if appendix:
+            doc.add_heading("审计附录 · 异常事件", level=1)
+            for line in appendix.split("\n")[2:]:
+                if line.startswith("- "):
+                    doc.add_paragraph(line[2:])
+    except Exception:
+        pass
     doc.add_paragraph("口径说明：单据状态为当前快照；金额统计排除驳回/撤回/作废。"
                       "本报告仅供内部管理参考，不构成审计意见。")
     out = Path(out)

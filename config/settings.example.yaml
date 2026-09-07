@@ -7,6 +7,7 @@ feishu:
     manager: ""
     finance: ""
     legal: ""
+    audit: ""
 
 llm:
   provider: local
@@ -73,3 +74,8 @@ legal:
     - 含违约责任条款
     - 含验收标准
     - 争议解决方式
+
+audit:
+  sampling_top: 10
+  weights:
+    suggest_threshold: 40

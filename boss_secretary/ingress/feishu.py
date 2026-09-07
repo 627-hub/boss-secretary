@@ -28,6 +28,7 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
 from boss_secretary.core import allowance as AL
 from boss_secretary.core import budget as BG
 from boss_secretary.core import compliance as C
+from boss_secretary.core import audit as AU
 from boss_secretary.core import contract as CT
 from boss_secretary.core import invoice_verify as IV
 from boss_secretary.core import extract as E
@@ -643,6 +644,44 @@ class SecretaryBot:
                 f"合同已付 {CT.paid_total(self.store.conn, cm.group(0)):.0f}/"
                 f"{c.get('amount') or '-'}），待财务确认打款")
 
+    def _audit_command(self, sender_open_id: str, text: str) -> str:
+        month = dt.date.today().strftime("%Y-%m")
+        if text == "审计" or text == "审计工作台":
+            return AU.workbench(self.store.conn, month)
+        if text == "抽检":
+            q = AU.sampling_queue(self.store.conn, month,
+                                  top_n=int((self.settings.get("audit") or {})
+                                            .get("sampling_top", 10)))
+            return AU.queue_table(q)
+        if text.startswith("抽检 ") or text.startswith("回放 "):
+            tm = re.search(r"T\d{8}-[0-9A-F]{6}", text)
+            if not tm:
+                return "用法：抽检 T20260907-XXXXXX（生成回放包）"
+            fp = AU.replay_package(self.store.conn, tm.group(0),
+                                   self.settings.get("storage", {})
+                                   .get("audit_dir", "data/audit"))
+            if not fp:
+                return f"单据不存在: {tm.group(0)}"
+            return f"回放包已生成：{fp}"
+        if text.startswith("误报 ") or text.startswith("属实 "):
+            aid = re.search(r"\d+", text.split()[1] if len(text.split()) > 1 else "")
+            if not aid:
+                return "用法：误报 12 / 属实 12（异常事件编号）"
+            status = "false_positive" if text.startswith("误报") else "confirmed"
+            r = AU.set_anomaly_status(self.store.conn, int(aid.group(0)), status)
+            if r is None:
+                return f"异常事件不存在: {aid.group(0)}"
+            note = "已计入该主体风险名单" if status == "confirmed" \
+                else "已标记负样本（阈值校准用）"
+            return f"异常事件 #{r['anomaly_id']} → {status}，{note}"
+        if text == "风险名单":
+            rows = AU.risk_list(self.store.conn)
+            if not rows:
+                return "（风险名单为空：无 confirmed≥2 的主体）"
+            return "\n".join(f"  {r['subject']} confirmed×{r['confirmed']}"
+                             for r in rows)
+        return "审计命令：审计/抽检/回放 T-xxx/误报 N/属实 N/风险名单"
+
     def _budget_command(self, sender_open_id: str, text: str) -> str:
         parsed = BG.parse_budget_text(text)
         if parsed is None:
@@ -756,6 +795,11 @@ class SecretaryBot:
         text = (text or "").strip()
         if text.startswith("预算"):
             return self._budget_command(sender_open_id, text)
+        audit_cmds = ("审计", "抽检", "回放", "误报", "属实", "风险名单")
+        if text.startswith(audit_cmds):
+            if sender_open_id not in (self.roles.get("audit"), self.roles.get("boss")):
+                return "仅审计/老板可使用审计工作台"
+            return self._audit_command(sender_open_id, text)
         emp = self.get_or_create_employee(sender_open_id)
         m = TICKET_ID_RE.search(text)
         if m and ("撤回" in text or "作废" in text):
@@ -1042,10 +1086,10 @@ class SecretaryBot:
         from boss_secretary.core import anomaly as A
         events = A.sweep(self.store, cfg_path="config/anomaly.yaml")
         bad = [e for e in events if e.severity in (A.WARN, A.ALERT)]
-        boss = self.roles.get("boss")
-        if boss:
-            head = f"月度异常扫查（{A.last_completed_period(dt.date.today())}）"
-            self.send_text(boss, head + "\n" + (A.to_table(bad) if bad else "无 WARN/ALERT 事件"))
+        head = f"月度异常扫查（{A.last_completed_period(dt.date.today())}）"
+        body = head + "\n" + (A.to_table(bad) if bad else "无 WARN/ALERT 事件")
+        for uid in filter(None, (self.roles.get("boss"), self.roles.get("audit"))):
+            self.send_text(uid, body)
         return f"{len(events)} 事件"
 
     def _job_monthly_report(self) -> str:
