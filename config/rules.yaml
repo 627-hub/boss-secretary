@@ -1,0 +1,42 @@
+rules:
+  R1:
+    name: 金额合规
+    enabled: true
+    params:
+      max_amount: 100000
+  R2:
+    name: 重复发票
+    enabled: true
+    params:
+      lookback_days: 90
+  R3:
+    name: 疑似重复报销
+    enabled: true
+    params:
+      window_days: 3
+  R4:
+    name: 费用类型上限
+    enabled: true
+    params:
+      limits:
+        交通: 200
+        餐饮: 200
+        住宿: 600
+        办公: 1000
+      per_person_types: [餐饮]
+  R5:
+    name: 日期合理性
+    enabled: true
+    params:
+      max_age_days: 90
+      max_future_days: 0
+  R6:
+    name: 必填齐备
+    enabled: true
+    params:
+      required: [amount, occurred_at, reason, expense_type, invoice_no]
+  R7:
+    name: 发票抬头
+    enabled: true
+    params:
+      company_keywords: []

@@ -1,0 +1,39 @@
+feishu:
+  app_id: "cli_REPLACE_ME"
+  app_secret: "REPLACE_ME"
+  domain: "https://open.feishu.cn"
+  roles:
+    boss: ""
+    manager: ""
+    finance: ""
+
+llm:
+  provider: local
+  local:
+    base_url: "http://127.0.0.1:8000/v1"
+    api_key: "local-not-checked"
+    model_extract: "Qwen/Qwen3.8-27B-Instruct"
+    model_review: "Qwen/Qwen3.8-27B-Instruct"
+    review_temperature: 0.1
+    guided_json: true
+  cloud:
+    enabled: false
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4.6"
+    api_key_env: "ZHIPU_API_KEY"
+
+daily_report:
+  time: "18:00"
+  boss_user_id: "REPLACE_ME"
+
+permissions:
+  company_report_default_for_managers: false
+  confidential_visible_roles: [BOSS, AUDIT]
+
+matrix:
+  active:
+    reimburse: "config/matrix/reimburse_v1.yaml"
+
+storage:
+  db_path: "data/secretary.db"
+  audit_dir: "data/audit"

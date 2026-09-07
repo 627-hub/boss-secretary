@@ -1,0 +1,11 @@
+a1:
+  enabled: true
+  min_baseline_months: 3
+  warn_pct: 50
+  alert_pct: 100
+  levels: [全司, 部门, 类型, 员工]
+a2:
+  enabled: true
+  lookback_days: 90
+  warn_pct: 20
+  alert_pct: 50

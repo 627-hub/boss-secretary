@@ -1,0 +1,20 @@
+flow: reimburse
+version: 1
+matrix: reimburse
+extract:
+  required: [amount, occurred_at, reason, expense_type]
+  optional: [invoice_img]
+rules: [R1, R2, R3, R4, R5, R6, R7]
+llm_review:
+  enabled: true
+  temperature: 0.1
+  guided_json: true
+timeout:
+  hours: 48
+  escalate_to: boss
+notifications:
+  employee: [submitted, approved, rejected, escalated]
+  finance: [approved]
+daily_report:
+  time: "18:00"
+  versions: [company, department, finance]
