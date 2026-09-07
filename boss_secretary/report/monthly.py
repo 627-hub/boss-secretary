@@ -7,9 +7,12 @@ CLI: boss-report --db data/secretary.db [--month 2026-09] [--format docx|pptx|bo
 from __future__ import annotations
 
 import datetime as dt
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from boss_secretary.core import llm as L2
 
 COUNTED = ("APPROVED", "PAID", "AUTO_APPROVED", "SUBMITTED", "ESCALATED")
 
@@ -183,11 +186,13 @@ def build_charts(data: Mapping, outdir: Path) -> list[Path]:
 
 def render_markdown(data: Mapping, images: Sequence[Path]) -> str:
     lines = [f"# 秘书月报 · {data['month']}",
-             f"生成时间：{data['generated_at']}", "",
-             f"本月单据 **{data['month_count']}** 张，金额 **{data['amount']}** 元；"
-             f"已打款 {data['paid_amount']} 元；驳回 {data['rejected_n']} 单；"
-             f"在途 {data['pending_n']} 单；AI 直批 {data['direct_approved_n']} 单；"
-             f"额度核销 {data['allowance_used_n']} 单。", ""]
+             f"生成时间：{data['generated_at']}", ""]
+    if data.get("narrative"):
+        lines += [f"> 🤖 AI 简述：{data['narrative']}", ""]
+    lines += [f"本月单据 **{data['month_count']}** 张，金额 **{data['amount']}** 元；"
+              f"已打款 {data['paid_amount']} 元；驳回 {data['rejected_n']} 单；"
+              f"在途 {data['pending_n']} 单；AI 直批 {data['direct_approved_n']} 单；"
+              f"额度核销 {data['allowance_used_n']} 单。", ""]
     for img in images:
         lines.append(f"![{img.stem}]({img})")
         lines.append("")
@@ -226,6 +231,8 @@ def export_docx(data: Mapping, images: Sequence[Path], out: Path) -> Path:
     doc = Document()
     doc.add_heading(f"秘书月报 · {data['month']}", 0)
     doc.add_paragraph(f"生成时间：{data['generated_at']}")
+    if data.get("narrative"):
+        doc.add_paragraph(f"🤖 AI 简述：{data['narrative']}")
     doc.add_paragraph(
         f"本月单据 {data['month_count']} 张，金额 {data['amount']} 元；"
         f"已打款 {data['paid_amount']} 元；驳回 {data['rejected_n']} 单；"
@@ -277,6 +284,9 @@ def export_pptx(data: Mapping, images: Sequence[Path], out: Path) -> Path:
     s2 = prs.slides.add_slide(prs.slide_layouts[1])
     s2.shapes.title.text = "核心指标"
     tf = s2.placeholders[1].text_frame
+    if data.get("narrative"):
+        tf.text = f"🤖 AI 简述：{data['narrative']}"
+        tf.add_paragraph()
     for line in (
         f"本月金额：{data['amount']} 元（已打款 {data['paid_amount']}）",
         f"AI 直批：{data['direct_approved_n']} 单 | 额度核销：{data['allowance_used_n']} 单",
@@ -300,11 +310,41 @@ def export_pptx(data: Mapping, images: Sequence[Path], out: Path) -> Path:
     return out
 
 
+NARRATIVE_SYSTEM = """你是财务分析师。基于给定的月度报销数据写一段 120-180 字的经营简述。
+要求：只用给定数字，不得编造或推算未给出的数据；覆盖总量、环比变化、
+费用结构亮点或异常、额度/直批使用情况；语言平实（给老板看的内部月报）。"""
+
+
+def generate_narrative(data: Mapping, *, llm_fn=None, settings: Mapping | None = None
+                       ) -> str | None:
+    payload = {k: data.get(k) for k in ("month", "month_count", "amount",
+                                        "paid_amount", "rejected_n", "pending_n",
+                                        "direct_approved_n", "allowance_used_n",
+                                        "type_sum", "trend")}
+    payload["anomalies_n"] = len(data.get("anomalies") or [])
+    try:
+        llm_fn = llm_fn or (lambda msgs: L2.from_settings_json(msgs, settings))
+        obj = llm_fn([
+            {"role": "system", "content": NARRATIVE_SYSTEM},
+            {"role": "user", "content":
+                "<monthly_data>\n" + json.dumps(payload, ensure_ascii=False,
+                                                  default=str) + "\n</monthly_data>"}])
+        if isinstance(obj, dict):
+            text = str(obj.get("narrative") or "")
+        else:
+            text = str(obj).strip()
+        return text[:400] or None
+    except Exception as e:
+        print(f"[monthly] AI 归因生成跳过: {type(e).__name__}: {e}")
+        return None
+
+
 def generate(conn, month: str | None = None, outdir: str | Path = "data/reports",
-             fmt: str = "both") -> dict:
+             fmt: str = "both", settings: Mapping | None = None) -> dict:
     month = month or last_completed_month()
     outdir = Path(outdir)
     data = collect(conn, month)
+    data["narrative"] = generate_narrative(data, settings=settings)
     images = build_charts(data, outdir)
     result = {"month": month, "images": [str(p) for p in images]}
     if fmt in ("docx", "both"):

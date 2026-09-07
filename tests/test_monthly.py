@@ -94,3 +94,25 @@ def test_cli(tmp_path):
                        capture_output=True, text=True,
                        env={**os.environ, "PYTHONPATH": "."}, cwd=".")
     assert r.returncode == 0 and "月报生成完成" in r.stdout
+
+
+def test_narrative_in_report(conn, tmp_path, monkeypatch):
+    def fake_narrative(data, **kw):
+        return "本月合计 867 元，餐饮与办公为主，全部为额定内支出。"
+    monkeypatch.setattr(MO, "generate_narrative", fake_narrative)
+    r = MO.generate(conn, month="2026-09", outdir=tmp_path / "rep", fmt="docx")
+    from docx import Document
+    texts = "\n".join(pp.text for pp in Document(str(r["docx"])).paragraphs)
+    assert "AI 简述" in texts and "额定内支出" in texts
+    data2 = {**MO.collect(conn, "2026-09"), "narrative": "测试叙事"}
+    md2 = MO.render_markdown(data2, [])
+    assert "测试叙事" in md2 and "AI 简述" in md2
+
+
+def test_narrative_skips_silently_on_llm_error():
+    from boss_secretary.core import llm as L
+
+    def boom(msgs, **kw):
+        raise L.LLMError("LLM 不可用")
+    out = MO.generate_narrative({"month": "2026-09"}, llm_fn=boom)
+    assert out is None
