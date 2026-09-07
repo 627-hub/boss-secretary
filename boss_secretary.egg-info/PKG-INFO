@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: boss-secretary
+Version: 0.1.0
+Summary: AI 秘书：飞书收单 → AI 抽取/审查 → 责任矩阵审批 → 日报/异常检测
+Requires-Python: >=3.10
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: requests>=2.31
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: lark-oapi>=1.4
+Requires-Dist: keyring>=25
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"

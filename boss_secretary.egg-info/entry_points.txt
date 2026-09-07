@@ -1,0 +1,8 @@
+[console_scripts]
+boss-anomaly = boss_secretary.core.anomaly:main
+boss-compliance = boss_secretary.core.compliance:main
+boss-daily = boss_secretary.report.daily:main
+boss-feishu = boss_secretary.feishu:main
+boss-matrix = boss_secretary.core.matrix:main
+boss-models = boss_secretary.models:main
+boss-secrets = boss_secretary.secrets:main
