@@ -40,6 +40,7 @@ boss_secretary/ingress/__init__.py
 boss_secretary/ingress/feishu.py
 boss_secretary/report/__init__.py
 boss_secretary/report/daily.py
+boss_secretary/report/monthly.py
 tests/test_allowance.py
 tests/test_anomaly.py
 tests/test_budget_import.py
@@ -55,3 +56,4 @@ tests/test_models.py
 tests/test_perm.py
 tests/test_router.py
 tests/test_secrets.py
+tests/test_voucher.py

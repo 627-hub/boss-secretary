@@ -6,5 +6,6 @@ boss-daily = boss_secretary.report.daily:main
 boss-feishu = boss_secretary.feishu:main
 boss-matrix = boss_secretary.core.matrix:main
 boss-models = boss_secretary.models:main
+boss-report = boss_secretary.report.monthly:main
 boss-secrets = boss_secretary.secrets:main
 boss-voucher = boss_secretary.finance.export:main

@@ -194,6 +194,41 @@ class SecretaryBot:
     def download_file(self, file_key: str, message_id: str) -> bytes | None:
         return self.download_resource(file_key, message_id, "file")
 
+    def upload_file(self, path: str, file_type: str = "docx") -> str | None:
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+        fp = Path(path)
+        if not fp.exists():
+            return None
+        ext = fp.suffix.lstrip(".") or "doc"
+        req = CreateFileRequest.builder().request_body(
+            CreateFileRequestBody.builder()
+            .file_type(file_type if file_type in ("opus", "mp4", "pdf", "doc",
+                                                  "docx", "xls", "ppt", "pptx")
+                       else "doc")
+            .file_name(fp.name).file(fp.read_bytes()).build()).build()
+        resp = self._client().im.v1.file.create(req)
+        if not resp.success():
+            print(f"[feishu] 文件上传失败 {resp.code}: {resp.msg}")
+            return None
+        return resp.file_key
+
+    def send_file(self, open_id: str, path: str, file_type: str = "docx") -> None:
+        key = self.upload_file(path, file_type)
+        if not key:
+            return
+        req = CreateMessageRequest.builder() \
+            .receive_id_type("open_id") \
+            .request_body(CreateMessageRequestBody.builder()
+                          .receive_id(open_id).msg_type("file")
+                          .content(json.dumps({"file_key": key},
+                                              ensure_ascii=False)).build()) \
+            .build()
+        resp = self._client().im.v1.message.create(req)
+        if not resp.success():
+            print(f"[feishu] 文件消息发送失败 {resp.code}: {resp.msg}")
+        else:
+            print(f"[feishu] 文件已发送 {open_id}: {Path(path).name}")
+
     # ── 员工档案 ──────────────────────────────────────────────
     def get_or_create_employee(self, open_id: str) -> dict:
         row = self.store.conn.execute(
@@ -686,6 +721,20 @@ class SecretaryBot:
             self.send_text(boss, head + "\n" + (A.to_table(bad) if bad else "无 WARN/ALERT 事件"))
         return f"{len(events)} 事件"
 
+    def _job_monthly_report(self) -> str:
+        from boss_secretary.report import monthly as MO
+        month = MO.last_completed_month()
+        result = MO.generate(self.store.conn, month=month, fmt="both")
+        boss = self.roles.get("boss")
+        if boss:
+            self.send_text(boss, f"📊 月报已生成（{month}）: "
+                                 f"{result.get('docx', '')}\n{result.get('pptx', '')}")
+            for key in ("docx", "pptx"):
+                if result.get(key):
+                    ft = "docx" if key == "docx" else "pptx"
+                    self.send_file(boss, result[key], file_type=ft)
+        return f"月报 {month} 已生成并发送"
+
     def _job_expire(self) -> str:
         return f"{AL.expire_sweep(self.store.conn)} 个额度过期"
 
@@ -699,6 +748,7 @@ class SecretaryBot:
                 at=(self.settings.get("daily_report") or {}).get("time", "18:00"),
                 fn=self._job_daily_report),
             Job("anomaly_monthly", "monthly", at="09:00", day=1, fn=self._job_anomaly),
+            Job("monthly_report", "monthly", at="09:10", day=1, fn=self._job_monthly_report),
             Job("allowance_expire", "daily", at="08:00", fn=self._job_expire),
             Job("timeout_check", "hourly", fn=self._job_timeouts),
         ]
