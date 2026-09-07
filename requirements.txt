@@ -3,3 +3,4 @@ openpyxl>=3.1
 requests>=2.31
 pytest>=8.0
 lark-oapi>=1.4
+keyring>=25

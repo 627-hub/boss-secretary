@@ -12,6 +12,8 @@ from typing import Any, Mapping, Sequence
 import requests
 import yaml
 
+from boss_secretary.core.secrets import merge_secret_overrides
+
 DEFAULT_SETTINGS = "config/settings.yaml"
 
 
@@ -23,7 +25,8 @@ def load_settings(path: str | Path | None = None) -> dict:
     p = Path(path or DEFAULT_SETTINGS)
     if not p.exists():
         raise LLMError(f"配置不存在: {p}（复制 config/settings.example.yaml 改名）")
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return merge_secret_overrides(data)
 
 
 def resolve_llm(settings: Mapping | None = None, provider: str | None = None) -> dict:

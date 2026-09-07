@@ -46,3 +46,11 @@ python3 -m boss_secretary.compliance eval --ctx '{"amount":98,"expense_type":"�
 - LLM：本地优先，vLLM 内网 OpenAI 兼容端点（默认 Qwen3.8-27B 量化，多模态覆盖发票图片）；云端 GLM 仅应急后手（settings 默认关闭）
 - 通道：飞书长连接（WebSocket，无需公网 IP）
 - 安全：权限过滤先于 LLM 上下文注入；audit 全量留痕 append-only；上线前红队 0 泄露
+
+## 密钥管理
+
+- 敏感字段（`feishu.app_secret` / `llm.*.api_key`）存 **macOS Keychain**（服务名 `boss-secretary`），`config/settings.yaml` 不落明文
+- 迁移/管理：`python3 -m boss_secretary.secrets migrate`（明文→Keychain 并清空 yaml）、`secrets set/get/list`
+- Keychain 不可用时回退读 yaml 明文字段（保持可用，但强烈建议装 keyring）
+- 日志卫生：飞书 ws 日志级别 WARNING（避免打印带鉴权参数的握手 URL）
+- 纵深边界（诚实版）：Keychain 防磁盘盗取/备份扩散/仓库误提交；**不防** 同用户恶意进程；已泄露进聊天记录的密钥唯一解法是**轮换**（飞书后台重置 app_secret、OpenRouter 重新生成 key）

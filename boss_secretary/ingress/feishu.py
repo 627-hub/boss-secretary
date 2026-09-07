@@ -228,7 +228,7 @@ class SecretaryBot:
         print(f"[feishu] 长连接启动… app_id={f['app_id']}")
         cli = lark.ws.Client(f["app_id"], f["app_secret"],
                              event_handler=self.build_event_handler(),
-                             log_level=lark.LogLevel.INFO)
+                             log_level=lark.LogLevel.WARNING)
         cli.start()
 
 
