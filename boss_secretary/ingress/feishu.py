@@ -27,6 +27,7 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
 from boss_secretary.core import allowance as AL
 from boss_secretary.core import budget as BG
 from boss_secretary.core import compliance as C
+from boss_secretary.core import invoice_verify as IV
 from boss_secretary.core import extract as E
 from boss_secretary.core import llm as L
 from boss_secretary.core import matrix as M
@@ -141,6 +142,7 @@ class SecretaryBot:
                                    role_resolvers=resolvers)
         self.roles = (s.get("feishu") or {}).get("roles") or {}
         self._pending: dict[str, dict] = {}
+        self._last_verify: dict[str, dict] = {}
         self.settings_path = settings_path
 
     # ── 飞书 API ──────────────────────────────────────────────
@@ -219,6 +221,8 @@ class SecretaryBot:
         except L.LLMError as e:
             print(f"[feishu] 发票图片识别失败: {e}")
             return f"发票识别失败（AI 视觉）: {str(e)[:120]}"
+        self._last_verify[sender_open_id] = IV.verify(inv, image_bytes=data,
+                                                      settings=self.settings)
         return self._merge_invoice(sender_open_id, emp, inv, "图片")
 
     def handle_file(self, sender_open_id: str, file_key: str,
@@ -234,6 +238,8 @@ class SecretaryBot:
         except L.LLMError as e:
             print(f"[feishu] PDF 发票识别失败: {e}")
             return f"PDF 发票解析失败: {str(e)[:120]}"
+        self._last_verify[sender_open_id] = IV.verify(inv, image_bytes=None,
+                                                      settings=self.settings)
         sig_note = ""
         if inv.get("e_signature") is True:
             sig_note = "（已检测到电子签章 ✓）"
@@ -263,6 +269,9 @@ class SecretaryBot:
             ctx["expense_type"] = et
         head = f"发票要素已识别（{source}）：号码 {ctx.get('invoice_no') or '-'}，" \
                f"金额 {ctx.get('invoice_amount') or '-'} 元"
+        vr = self._last_verify.pop(sender_open_id, None)
+        if vr:
+            head += "\n── AI 形式验真 ──\n" + IV.to_text(vr)
         result = self._ingest(sender_open_id, emp, ctx, source)
         return head + "\n" + result if result.startswith(("请补充", "⚠")) else result
 
@@ -410,9 +419,13 @@ class SecretaryBot:
                    "（回复内容将自动并入；输入「取消」放弃）"
         self._pending.pop(sender_open_id, None)
         issues = E.cross_check_invoice(ctx)
+        vr = self._last_verify.pop(sender_open_id, None)
+        if vr:
+            issues += [f"{i['rule']}: {i['detail']}" for i in vr["structural"] + vr["qr_issues"]
+                       if i["level"] == IV.FAIL]
         if issues:
             self._pending[sender_open_id] = {"ctx": ctx, "ts": now}
-            return "⚠ 发现不一致：" + "；".join(issues) + \
+            return "⚠ 验真与核验发现问题：" + "；".join(issues) + \
                    "\n如确认无误回复「按此提交」，或重新发送修正信息（「取消」放弃）"
         return self._finalize(sender_open_id, emp, ctx)
 

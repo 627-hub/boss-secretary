@@ -192,7 +192,8 @@ def test_invoice_crosscheck_mismatch_guards(bot, monkeypatch):
                                             "sensitivity": "normal"})
     bot.handle_image("ou_emp1", "img_k", "om_k")
     reply = bot.handle_text("ou_emp1", "9月5号打车300块，发票X1")
-    assert "不一致" in reply and "按此提交" in reply
+    assert ("验真与核验发现问题" in reply and "按此提交" in reply
+            and "报销金额 300 ≠ 发票金额 999" in reply)
     ok = bot.handle_text("ou_emp1", "按此提交")
     assert "已受理" in ok or "自动通过" in ok
 
