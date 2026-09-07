@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boss-secretary"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI 秘书：飞书收单 → AI 抽取/审查 → 责任矩阵审批 → 日报/异常检测"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}

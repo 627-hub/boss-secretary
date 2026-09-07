@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: boss-secretary
-Version: 0.1.0
+Version: 1.0.0
 Summary: AI 秘书：飞书收单 → AI 抽取/审查 → 责任矩阵审批 → 日报/异常检测
 License: Boss Secretary 公开源许可证
         （Boss Secretary Public Source License，v1.0，2026）
