@@ -1,7 +1,10 @@
+import datetime as dt
 import json
 
 import pytest
 
+from boss_secretary.core import budget as BG
+from boss_secretary.core import contract as CT
 from boss_secretary.core import extract as E
 from boss_secretary.core import router as R
 from boss_secretary.ingress import feishu as F
@@ -251,3 +254,52 @@ def test_procurement_cancel_clears_draft(bot, monkeypatch):
     out = bot.handle_text("ou_emp1", "取消")
     assert "已放弃" in out
     assert "ou_emp1" not in bot._pending
+
+
+def test_contract_two_stage_with_pdf_review(bot, monkeypatch, tmp_path):
+    monkeypatch.setattr(F.E, "extract_contract",
+                        lambda text, **kw: {"title": "XX设备采购合同",
+                                            "supplier": "YY公司", "amount": 80000,
+                                            "start_date": "2026-09-01",
+                                            "end_date": "2027-08-31",
+                                            "payment_terms": "分三期"})
+    out = bot.handle_text("ou_emp1", "登记合同 XX设备采购合同 供应商YY 80000元 "
+                                    "2026-09-01至2027-08-31 分三期付款")
+    assert "合同要素已登记" in out and "合同文件" in out
+    # 造一个真 PDF（含可提取文本）
+    import io
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=600, height=800)
+    buf = io.BytesIO()
+    w.write(buf)
+    # pypdf 空页无文本, 直接 mock 提取与审查
+    monkeypatch.setattr(bot, "download_file", lambda key, mid="": b"%PDF-fake")
+    monkeypatch.setattr(F.E, "review_contract",
+                        lambda text, points, **kw: {
+                            "verdict": "WARN",
+                            "risks": [{"level": "中", "clause": "付款",
+                                       "note": "节点模糊"}],
+                            "missing": ["验收标准"]})
+    # 用真 PDF 管线: monkeypatch PdfReader 不划算, 直接测 _finalize_contract 全文路径
+    pend = bot._pending["ou_emp1"]
+    out2 = bot._finalize_contract("ou_emp1",
+                                  bot.get_or_create_employee("ou_emp1"),
+                                  pend["ctx"], full_text="本合同付款方式为验收后支付",
+                                  source="合同文件全文")
+    assert "合同已提交" in out2 and "审查依据：合同文件全文" in out2
+    cards = [c for _, c in bot.rec.cards if "合同审批" in
+             c["header"]["title"]["content"]]
+    assert cards and "节点模糊" in cards[-1]["elements"][0]["text"]["content"]
+
+
+def test_procurement_budget_warn(bot, monkeypatch):
+    BG.set_budget(bot.store.conn, "*", dt.date.today().strftime("%Y-%m"), 500)
+    monkeypatch.setattr(F.E, "extract_procurement",
+                        lambda text, **kw: {"title": "大服务器", "supplier": "X",
+                                            "amount": 8000, "ptype": "设备",
+                                            "reason": None})
+    bot.handle_text("ou_emp1", "采购大服务器 8000元")
+    monkeypatch.setattr(bot, "download_image", lambda key, mid="": b"fake")
+    out = bot.handle_image("ou_emp1", "k", "m")
+    assert "超预算" in out and "已用 0/预算 500" in out

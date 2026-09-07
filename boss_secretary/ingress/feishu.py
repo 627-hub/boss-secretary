@@ -28,8 +28,10 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
 from boss_secretary.core import allowance as AL
 from boss_secretary.core import budget as BG
 from boss_secretary.core import compliance as C
+from boss_secretary.core import contract as CT
 from boss_secretary.core import invoice_verify as IV
 from boss_secretary.core import extract as E
+from boss_secretary.core import specs as SP
 from boss_secretary.core import llm as L
 from boss_secretary.core import matrix as M
 from boss_secretary.core import router as R
@@ -267,6 +269,14 @@ class SecretaryBot:
             path = self._save_attachment(data, "报价单图片.jpg", sender_open_id)
             pend["ctx"].setdefault("attachments", []).append(path)
             return self._finalize_procurement(sender_open_id, emp, pend["ctx"])
+        if pend and pend.get("kind") == "contract":
+            path = self._save_attachment(data, "合同图片.jpg", sender_open_id)
+            pend["ctx"].setdefault("attachments", []).append(path)
+            return (f"合同图片已存档（{path}）。图片合同暂仅做要素审查——"
+                    "如需 AI 全文审查请上传 PDF 版；重新发「登记合同 …」+ 本文件可重新提交"
+                    ) if False else self._finalize_contract(
+                sender_open_id, emp, pend["ctx"],
+                full_text=None, source="要素（附图片合同存档）")
         try:
             inv = E.extract_invoice_image(b64mod.b64encode(data).decode(),
                                           settings=self.settings)
@@ -288,6 +298,23 @@ class SecretaryBot:
             path = self._save_attachment(data, filename or "附件", sender_open_id)
             pend["ctx"].setdefault("attachments", []).append(path)
             return self._finalize_procurement(sender_open_id, emp, pend["ctx"])
+        if pend and pend.get("kind") == "contract":
+            path = self._save_attachment(data, filename or "合同文件", sender_open_id)
+            pend["ctx"].setdefault("attachments", []).append(path)
+            if filename.lower().endswith(".pdf"):
+                try:
+                    from pypdf import PdfReader
+                    import io as _io
+                    reader = PdfReader(_io.BytesIO(data))
+                    full_text = "\n".join((pg.extract_text() or "")
+                                          for pg in reader.pages)
+                except Exception as e:
+                    print(f"[feishu] 合同 PDF 文本提取失败: {e}")
+                    full_text = None
+                return self._finalize_contract(sender_open_id, emp, pend["ctx"],
+                                               full_text=full_text, source="合同文件全文")
+            return (f"已存档 {filename}（非 PDF，无法全文提取）。"
+                    "以要素审查提交可回复「按此提交」，或上传 PDF 版重新审查")
         if not filename.lower().endswith(".pdf"):
             return f"暂只支持 PDF 电子发票（收到 {filename}），图片发票请直接发图"
         try:
@@ -450,6 +477,17 @@ class SecretaryBot:
 
     def _finalize_procurement(self, sender_open_id: str, emp: Mapping,
                               ctx: Mapping) -> str:
+        spec = SP.get_spec("procurement")
+        b = BG.check(self.store.conn, emp.get("dept_id"),
+                     dt.date.today().strftime("%Y-%m"),
+                     extra=float(ctx.get("amount") or 0), settings=self.settings)
+        budget_warn = ""
+        if spec.budget_check and b["checked"] and not b["ok"]:
+            base = (f"⚠ 超预算：{b['dept']} {b['month']} 已用 {b['used']:.0f}/"
+                    f"预算 {b['budget']:.0f}，本单 {ctx.get('amount')} 元")
+            if b["block"]:
+                return base + "，已拦截。请联系老板调整预算"
+            budget_warn = base + "\n"
         rule_results = C.run_rules({"amount": ctx["amount"],
                                     "expense_type": ctx.get("ptype")},
                                    self.store.history({"occurred_at":
@@ -476,49 +514,80 @@ class SecretaryBot:
         outcome = self.router_p.run_review(tid, llm_verdict=rv["verdict"])
         self._pending.pop(sender_open_id, None)
         if outcome.next_status == R.SUBMITTED or outcome.next_status == R.ESCALATED:
-            return (f"采购单已受理 {tid}（{ctx['amount']}元，附件 "
+            return budget_warn + (f"采购单已受理 {tid}（{ctx['amount']}元，附件 "
                     f"{len(ctx.get('attachments') or [])} 个），进入审批："
                     f"{'、'.join(outcome.approver_roles) or '-'}；"
                     f"通过后可发「登记合同 XX合同 供应商 金额 起止日期 付款条款」")
         if outcome.next_status == R.AUTO_APPROVED:
-            return f"✅ 采购单 {tid} 已通过（{ctx['amount']}元）"
+            return budget_warn + f"✅ 采购单 {tid} 已通过（{ctx['amount']}元）"
         return f"采购单状态: {outcome.next_status}"
 
     def _contract_register(self, sender_open_id: str, emp: Mapping, text: str) -> str:
+        spec = SP.get_spec("contract")
         print(f"[feishu] 合同登记: {text[:40]!r}")
         try:
             c = E.extract_contract(text, settings=self.settings)
         except L.LLMError as e:
             return f"合同要素解析失败: {str(e)[:120]}"
         print(f"[feishu] 合同抽取结果: {c}")
-        if not c.get("title"):
-            return ("请按此格式登记：登记合同 XX采购合同 供应商YY 50000元 "
-                    "2026-09-01至2027-08-31 分三期付款")
+        c.setdefault("attachments", [])
+        missing = [k for k in spec.required_fields
+                   if k not in ("amount",) and not c.get(k)]
+        if not c.get("amount"):
+            missing = ["amount"] + missing
+        if missing:
+            self._pending[sender_open_id] = {"kind": "contract", "ctx": c,
+                                             "ts": time.time()}
+            return f"请补充：{spec.missing_names(missing)}（回复自动并入；「取消」放弃）"
+        self._pending[sender_open_id] = {"kind": "contract", "ctx": c,
+                                         "ts": time.time()}
+        return ("合同要素已登记。请上传**合同文件（PDF）**完成 AI 全文审查并提交"
+               "（无文件则按要素审查；「取消」放弃）")
+
+    def _finalize_contract(self, sender_open_id: str, emp: Mapping,
+                           ctx: Mapping, full_text: str | None = None,
+                           source: str = "要素") -> str:
+        spec = SP.get_spec("contract")
+        b = BG.check(self.store.conn, emp.get("dept_id"),
+                     dt.date.today().strftime("%Y-%m"),
+                     extra=float(ctx.get("amount") or 0), settings=self.settings)
+        budget_warn = ""
+        if spec.budget_check and b["checked"] and not b["ok"]:
+            base = (f"⚠ 超预算：{b['dept']} {b['month']} 已用 {b['used']:.0f}/"
+                    f"预算 {b['budget']:.0f}，合同 {ctx.get('amount')} 元")
+            if b["block"]:
+                return base + "，已拦截。请联系老板调整预算"
+            budget_warn = base + "\n"
         points = self.settings.get("legal", {}).get("review_points") or []
+        review_text = full_text or " ".join(str(v) for k, v in ctx.items()
+                                            if k != "attachments" and v)
         try:
-            rv = E.review_contract(" ".join(str(v) for v in c.values() if v),
-                                   points, settings=self.settings)
+            rv = E.review_contract(review_text, points, settings=self.settings)
         except L.LLMError as e:
             rv = {"verdict": C.WARN, "risks": [], "missing": [f"AI 审查不可用: {e}"]}
         print(f"[feishu] 合同 AI 审查: {rv['verdict']} risks={len(rv['risks'])}")
+        rv["review_source"] = source
         cid = CT.create(self.store.conn, employee_id=emp["user_id"],
-                        dept_id=emp.get("dept_id"), title=c["title"],
-                        supplier=c.get("supplier"), amount=c.get("amount"),
-                        start_date=c.get("start_date"), end_date=c.get("end_date"),
-                        payment_terms=c.get("payment_terms"), ai_review=rv)
+                        dept_id=emp.get("dept_id"), title=ctx["title"],
+                        supplier=ctx.get("supplier"), amount=ctx.get("amount"),
+                        start_date=ctx.get("start_date"), end_date=ctx.get("end_date"),
+                        payment_terms=ctx.get("payment_terms"), ai_review=rv,
+                        evidence_file=(ctx.get("attachments") or [None])[-1])
+        self._pending.pop(sender_open_id, None)
         for role in ("legal", "boss"):
             uid = self.roles.get(role)
             if uid:
                 self.send_card(uid, self.contract_review_card(
-                    cid, c["title"], c.get("supplier"), c.get("amount"),
+                    cid, ctx["title"], ctx.get("supplier"), ctx.get("amount"),
                     rv["risks"] + [{"level": "提示", "clause": "缺失条款",
                                     "note": "、".join(rv["missing"])}]))
             else:
                 self.send_text(sender_open_id,
                                f"提示：审批角色 {role} 未配置 open_id，合同 {cid} 无法推送")
         miss = f"；缺失条款：{'、'.join(rv['missing'])}" if rv.get("missing") else ""
-        return (f"合同已登记 {cid}（AI 审查：{rv['verdict']}，"
-                f"风险 {len(rv['risks'])} 项{miss}），等待 legal+boss 会签生效")
+        return budget_warn + (f"合同已提交 {cid}（AI 审查：{rv['verdict']}，"
+                              f"风险 {len(rv['risks'])} 项{miss}，"
+                              f"审查依据：{source}），等待 legal+boss 会签生效")
 
     def _contract_query(self, sender_open_id: str, cid: str) -> str:
         c = CT.get(self.store.conn, cid)
@@ -674,9 +743,13 @@ class SecretaryBot:
             if not pending:
                 return "没有待提交的单据"
             self._pending.pop(sender_open_id, None)
-            return self._finalize(sender_open_id,
-                                  self.get_or_create_employee(sender_open_id),
-                                  pending["ctx"])
+            emp = self.get_or_create_employee(sender_open_id)
+            if pending.get("kind") == "contract":
+                return self._finalize_contract(sender_open_id, emp, pending["ctx"],
+                                               source="要素")
+            if pending.get("kind") == "procurement":
+                return self._finalize_procurement(sender_open_id, emp, pending["ctx"])
+            return self._finalize(sender_open_id, emp, pending["ctx"])
         return self._route_command(sender_open_id, text)
 
     def _route_command(self, sender_open_id: str, text: str) -> str:
