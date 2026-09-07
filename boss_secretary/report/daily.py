@@ -169,8 +169,8 @@ def send_all(store, notifier, now: dt.datetime | None = None,
         actor = P.Actor(user_id=boss_user_id, role=P.BOSS)
         body = render_for(actor, tickets, day, now=now)
         notifier.send("daily.report.company", {"ticket_id": "-", "status": "company",
-                                               "report_date": day.isoformat()},
-                      [boss_user_id])
+                                               "report_date": day.isoformat(),
+                                               "body": body}, [boss_user_id])
         sent.append(("company", boss_user_id))
     for uid, dept in store.conn.execute(
             "SELECT feishu_user_id, dept_id FROM employees WHERE role='MANAGER'"):
@@ -181,13 +181,14 @@ def send_all(store, notifier, now: dt.datetime | None = None,
         version = "company" if enabled else "department"
         notifier.send(f"daily.report.{version}",
                       {"ticket_id": "-", "status": version,
-                       "report_date": day.isoformat()}, [uid])
+                       "report_date": day.isoformat(), "body": body}, [uid])
         sent.append((version, uid))
     for uid in finance_user_ids:
         actor = P.Actor(user_id=uid, role=P.FINANCE)
         body = render_for(actor, tickets, day, now=now)
         notifier.send("daily.report.finance", {"ticket_id": "-", "status": "finance",
-                                               "report_date": day.isoformat()}, [uid])
+                                               "report_date": day.isoformat(),
+                                               "body": body}, [uid])
         sent.append(("finance", uid))
     return sent
 

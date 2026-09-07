@@ -112,6 +112,15 @@ CREATE TABLE IF NOT EXISTS allowances(
   expires_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS budgets(
+  dept_id TEXT NOT NULL,
+  month TEXT NOT NULL,
+  amount REAL NOT NULL,
+  created_by TEXT,
+  updated_at TEXT DEFAULT (datetime('now','localtime')),
+  PRIMARY KEY(dept_id, month)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT DEFAULT (datetime('now','localtime')),

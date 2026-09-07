@@ -25,6 +25,7 @@ from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                  ReplyMessageRequest, ReplyMessageRequestBody)
 
 from boss_secretary.core import allowance as AL
+from boss_secretary.core import budget as BG
 from boss_secretary.core import compliance as C
 from boss_secretary.core import extract as E
 from boss_secretary.core import llm as L
@@ -266,6 +267,16 @@ class SecretaryBot:
         return head + "\n" + result if result.startswith(("请补充", "⚠")) else result
 
     def _finalize(self, sender_open_id: str, emp: Mapping, ctx: Mapping) -> str:
+        b = BG.check(self.store.conn, emp.get("dept_id"),
+                     (ctx.get("occurred_at") or dt.date.today().isoformat())[:7],
+                     extra=float(ctx.get("amount") or 0), settings=self.settings)
+        budget_warn = ""
+        if b["checked"] and not b["ok"]:
+            base = (f"⚠ 超预算：{b['dept']} {b['month']} 已用 {b['used']:.0f}/"
+                    f"预算 {b['budget']:.0f}，本单 {ctx.get('amount')} 元")
+            if b["block"]:
+                return base + "，已拦截（settings.budgets.block_over）。请联系老板调整预算"
+            budget_warn = base + "\n"
         tid = self.router.create_ticket(ctx, emp)
         print(f"[feishu] 已建单 {tid}")
         rule_results = C.run_rules(ctx, self.store.history(ctx))
@@ -286,17 +297,17 @@ class SecretaryBot:
                              float(ctx.get("amount") or 0))
             self._after_review(tid, R.ReviewOutcome(
                 tuple(rule_results), summary, None, R.AUTO_APPROVED, (), "", ()))
-            return (f"✅ 额度内核销（{al['allowance_id']}：{ctx.get('amount')}元，"
+            return budget_warn + (f"✅ 额度内核销（{al['allowance_id']}：{ctx.get('amount')}元，"
                     f"额度余 {rem} 元）。已提交财务打款；如有异议回复「撤回 {tid}」")
         outcome = self.router.run_review(tid, llm_verdict=rv["verdict"])
         self._after_review(tid, outcome)
         if outcome.next_status == R.AUTO_APPROVED:
             self._send_paid_card_if_finance(tid)
-            return (f"✅ 已自动通过（{tid}，{ctx.get('amount')}元）。"
+            return budget_warn + (f"✅ 已自动通过（{tid}，{ctx.get('amount')}元）。"
                     f"待财务打款；如有异议回复「撤回 {tid}」")
         if outcome.next_status == R.REJECTED:
             return f"❌ 单据 {tid} 未通过：{'; '.join(rv['suggestions']) or '见规则审查'}"
-        return (f"已受理 {tid}（{ctx.get('amount')}元），"
+        return budget_warn + (f"已受理 {tid}（{ctx.get('amount')}元），"
                 f"进入审批：{'、'.join(outcome.approver_roles) or '-'}")
 
     def _send_paid_card_if_finance(self, ticket_id: str) -> None:
@@ -314,6 +325,25 @@ class SecretaryBot:
         lines = [f"{tid}  {st}  {amt if amt is not None else '-'}元"
                  for tid, st, amt in rows]
         return "\n".join(["你的报销单："] + lines)
+
+    def _budget_command(self, sender_open_id: str, text: str) -> str:
+        parsed = BG.parse_budget_text(text)
+        if parsed is None:
+            return "用法：`预算` 总览 | `预算 部门 2026-09 50000` 设置（全司用 *）"
+        privileged = sender_open_id in (self.roles.get("boss"), self.roles.get("finance"))
+        month = parsed.get("month") or dt.date.today().strftime("%Y-%m")
+        if parsed["action"] == "set":
+            if not privileged:
+                return "仅老板/财务可设置预算"
+            BG.set_budget(self.store.conn, parsed["dept"], parsed["month"],
+                          parsed["amount"], created_by=sender_open_id)
+            return f"预算已设置：{parsed['dept']} {parsed['month']} {parsed['amount']:.0f} 元"
+        if parsed["action"] == "query":
+            return BG.to_table(BG.overview(self.store.conn, month), month) \
+                if parsed["dept"] == "*" else \
+                BG.to_table([r for r in BG.overview(self.store.conn, month)
+                             if r["dept"] == parsed["dept"]], month)
+        return BG.to_table(BG.overview(self.store.conn, month), month)
 
     def _allowance_request(self, sender_open_id: str, emp: Mapping, text: str) -> str:
         parsed = AL.extract_allowance(text, settings=self.settings)
@@ -399,6 +429,8 @@ class SecretaryBot:
 
     def _route_command(self, sender_open_id: str, text: str) -> str:
         text = (text or "").strip()
+        if text.startswith("预算"):
+            return self._budget_command(sender_open_id, text)
         emp = self.get_or_create_employee(sender_open_id)
         m = TICKET_ID_RE.search(text)
         if m and ("撤回" in text or "作废" in text):
@@ -449,6 +481,20 @@ class SecretaryBot:
             if action == "reject":
                 self.router.reject(ticket_id, open_id, role, "卡片驳回")
                 return "已驳回"
+            if action == "allowance_approve":
+                a_pre = AL.get(self.store.conn, value.get("allowance_id"))
+                if a_pre:
+                    emp_dept = self.store.conn.execute(
+                        "SELECT dept_id FROM employees WHERE feishu_user_id=?",
+                        (a_pre["employee_id"],)).fetchone()
+                    b = BG.check(self.store.conn, emp_dept[0] if emp_dept else None,
+                                 dt.date.today().strftime("%Y-%m"),
+                                 extra=float(a_pre["total_amount"]),
+                                 settings=self.settings)
+                    if b["checked"] and not b["ok"] and b["block"]:
+                        return (f"额度批准被预算检查拦截：{b['dept']} {b['month']} "
+                                f"剩余 {b['remaining']:.0f} 元，本额度 {a_pre['total_amount']:.0f} 元。"
+                                f"请先调整预算（预算 {b['dept']} {b['month']} 金额）")
             if action in ("allowance_approve", "allowance_reject"):
                 a = AL.decide(self.store.conn, value.get("allowance_id"),
                               open_id, approve=(action == "allowance_approve"))
@@ -585,7 +631,51 @@ class SecretaryBot:
                 .register_p2_card_action_trigger(on_card)
                 .build())
 
+    def _job_daily_report(self) -> str:
+        from boss_secretary.report import daily as D
+
+        class TextNotifier:
+            def __init__(self, b):
+                self.bot = b
+
+            def send(self, event, ticket, to):
+                for uid in to:
+                    if uid:
+                        self.bot.send_text(uid, ticket.get("body") or event)
+
+        finance = [self.roles["finance"]] if self.roles.get("finance") else []
+        D.send_all(self.store, TextNotifier(self), boss_user_id=self.roles.get("boss"),
+                   finance_user_ids=finance)
+        return "日报已发送"
+
+    def _job_anomaly(self) -> str:
+        from boss_secretary.core import anomaly as A
+        events = A.sweep(self.store, cfg_path="config/anomaly.yaml")
+        bad = [e for e in events if e.severity in (A.WARN, A.ALERT)]
+        boss = self.roles.get("boss")
+        if boss:
+            head = f"月度异常扫查（{A.last_completed_period(dt.date.today())}）"
+            self.send_text(boss, head + "\n" + (A.to_table(bad) if bad else "无 WARN/ALERT 事件"))
+        return f"{len(events)} 事件"
+
+    def _job_expire(self) -> str:
+        return f"{AL.expire_sweep(self.store.conn)} 个额度过期"
+
+    def _job_timeouts(self) -> str:
+        return f"{len(self.router.check_timeouts())} 单超时升级"
+
     def run(self) -> None:
+        from boss_secretary.core.scheduler import Job, Scheduler, start_background
+        jobs = [
+            Job("daily_report", "daily",
+                at=(self.settings.get("daily_report") or {}).get("time", "18:00"),
+                fn=self._job_daily_report),
+            Job("anomaly_monthly", "monthly", at="09:00", day=1, fn=self._job_anomaly),
+            Job("allowance_expire", "daily", at="08:00", fn=self._job_expire),
+            Job("timeout_check", "hourly", fn=self._job_timeouts),
+        ]
+        self.scheduler = Scheduler(jobs)
+        start_background(self.scheduler)
         f = self.settings["feishu"]
         print(f"[feishu] 长连接启动… app_id={f['app_id']}")
         cli = lark.ws.Client(f["app_id"], f["app_secret"],

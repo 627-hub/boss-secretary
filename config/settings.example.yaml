@@ -41,3 +41,6 @@ storage:
 allowances:
   max_manager_grant: 1000
   default_expire_days: 30
+
+budgets:
+  block_over: false
