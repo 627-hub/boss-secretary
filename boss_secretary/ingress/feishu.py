@@ -16,6 +16,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -37,15 +38,20 @@ from boss_secretary.core.llm import load_settings
 TICKET_ID_RE = re.compile(r"T\d{8}-[0-9A-F]{6}")
 
 
-def approval_card(ticket_id: str, amount: Any, reason: Any, role: str) -> dict:
+def approval_card(ticket_id: str, amount: Any, reason: Any, role: str,
+                  type_: str = "reimburse") -> dict:
+    is_proc = type_ == "procurement"
+    title = f"{'采购' if is_proc else '报销'}审批 {ticket_id}"
+    label = "采购标的" if is_proc else "事由"
+    reason_s = reason if is_proc else (reason or "-")
     return {
         "config": {"wide_screen_mode": True},
-        "header": {"template": "orange",
-                   "title": {"tag": "plain_text", "content": f"报销审批 {ticket_id}"}},
+        "header": {"template": "purple" if is_proc else "orange",
+                   "title": {"tag": "plain_text", "content": title}},
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md",
                                     "content": f"**金额**：{amount if amount is not None else '-'} 元\n"
-                                               f"**事由**：{reason or '-'}\n"
+                                               f"**{label}**：{reason_s}\n"
                                                f"**审批角色**：{role}"}},
             {"tag": "action", "actions": [
                 {"tag": "button", "text": {"tag": "plain_text", "content": "同意"},
@@ -93,7 +99,8 @@ class FeishuEventBridge:
                     uid = self._resolve(role, ticket)
                     if uid:
                         self.bot.send_card(uid, approval_card(
-                            tid, ticket.get("amount"), ticket.get("reason"), role))
+                            tid, ticket.get("amount"), ticket.get("reason"), role,
+                            type_=ticket.get("type") or "reimburse"))
                     else:
                         self.bot.send_text(emp, f"提示：审批角色 {role} 未配置 open_id，"
                                                 f"单据 {tid} 无法推送卡片")
@@ -255,6 +262,11 @@ class SecretaryBot:
         if not data:
             return "图片下载失败，请重发"
         emp = self.get_or_create_employee(sender_open_id)
+        pend = self._pending.get(sender_open_id)
+        if pend and pend.get("kind") == "procurement":
+            path = self._save_attachment(data, "报价单图片.jpg", sender_open_id)
+            pend["ctx"].setdefault("attachments", []).append(path)
+            return self._finalize_procurement(sender_open_id, emp, pend["ctx"])
         try:
             inv = E.extract_invoice_image(b64mod.b64encode(data).decode(),
                                           settings=self.settings)
@@ -271,6 +283,11 @@ class SecretaryBot:
         if not data:
             return "文件下载失败，请重发"
         emp = self.get_or_create_employee(sender_open_id)
+        pend = self._pending.get(sender_open_id)
+        if pend and pend.get("kind") == "procurement":
+            path = self._save_attachment(data, filename or "附件", sender_open_id)
+            pend["ctx"].setdefault("attachments", []).append(path)
+            return self._finalize_procurement(sender_open_id, emp, pend["ctx"])
         if not filename.lower().endswith(".pdf"):
             return f"暂只支持 PDF 电子发票（收到 {filename}），图片发票请直接发图"
         try:
@@ -408,6 +425,14 @@ class SecretaryBot:
                          "type": "primary",
                          "value": {"action": "payment_paid", "payment_id": pid}}]}]}
 
+    def _save_attachment(self, data: bytes, filename: str, sender: str) -> str:
+        d = Path("data/attachments")
+        d.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w.\-\u4e00-\u9fff]", "_", filename or "附件")
+        fp = d / f"{dt.date.today():%Y%m%d}_{uuid.uuid4().hex[:4]}_{safe}"
+        fp.write_bytes(data)
+        return str(fp)
+
     def _procurement_submit(self, sender_open_id: str, emp: Mapping, text: str) -> str:
         print(f"[feishu] 采购抽取: {text[:40]!r}")
         try:
@@ -417,6 +442,14 @@ class SecretaryBot:
         print(f"[feishu] 采购抽取结果: {ctx}")
         if not ctx.get("amount") or not ctx.get("title"):
             return "请补充采购标的和金额，例如：采购测试服务器 8000 元，供应商 XX 电脑"
+        ctx.setdefault("attachments", [])
+        self._pending[sender_open_id] = {"kind": "procurement", "ctx": ctx,
+                                         "ts": time.time()}
+        return ("请上传采购附件（**合同 / PO / 报价单** 任一，图片或 PDF/文档），"
+                "上传后自动提交审批；「取消」放弃")
+
+    def _finalize_procurement(self, sender_open_id: str, emp: Mapping,
+                              ctx: Mapping) -> str:
         rule_results = C.run_rules({"amount": ctx["amount"],
                                     "expense_type": ctx.get("ptype")},
                                    self.store.history({"occurred_at":
@@ -441,8 +474,10 @@ class SecretaryBot:
         tid = self.router_p.create_ticket(ctx, emp, type_override="procurement")
         print(f"[feishu] 采购建单 {tid} → {action}")
         outcome = self.router_p.run_review(tid, llm_verdict=rv["verdict"])
+        self._pending.pop(sender_open_id, None)
         if outcome.next_status == R.SUBMITTED or outcome.next_status == R.ESCALATED:
-            return (f"采购单已受理 {tid}（{ctx['amount']}元），进入审批："
+            return (f"采购单已受理 {tid}（{ctx['amount']}元，附件 "
+                    f"{len(ctx.get('attachments') or [])} 个），进入审批："
                     f"{'、'.join(outcome.approver_roles) or '-'}；"
                     f"通过后可发「登记合同 XX合同 供应商 金额 起止日期 付款条款」")
         if outcome.next_status == R.AUTO_APPROVED:

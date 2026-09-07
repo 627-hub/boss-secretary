@@ -219,3 +219,35 @@ def test_card_action_paid(bot):
     out2 = bot.on_card_action("ou_m1", {"action": "paid", "ticket_id": tid,
                                         "role": "finance"})
     assert "仅财务" in out2
+
+
+def test_procurement_requires_attachment_and_card_title(bot, monkeypatch):
+    monkeypatch.setattr(F.E, "extract_procurement",
+                        lambda text, **kw: {"title": "测试服务器",
+                                            "supplier": "XX电脑", "amount": 8000,
+                                            "ptype": "设备", "reason": "开发测试"})
+    out = bot.handle_text("ou_emp1", "采购测试服务器8000元 供应商XX电脑")
+    assert "请上传采购附件" in out
+    pend = bot._pending["ou_emp1"]
+    assert pend["kind"] == "procurement"
+    monkeypatch.setattr(bot, "download_image", lambda key, mid="": b"fake")
+    out2 = bot.handle_image("ou_emp1", "imgk", "omk")
+    assert "采购单已受理" in out2 and "附件 1 个" in out2
+    tid = bot.store.conn.execute(
+        "SELECT ticket_id FROM tickets ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    t_ = bot.store.get(tid)
+    assert t_["type"] == "procurement" and t_["status"] == R.SUBMITTED
+    _, card = bot.rec.cards[-1]
+    assert card["header"]["title"]["content"].startswith("采购审批")
+    assert card["header"]["template"] == "purple"
+
+
+def test_procurement_cancel_clears_draft(bot, monkeypatch):
+    monkeypatch.setattr(F.E, "extract_procurement",
+                        lambda text, **kw: {"title": "x", "supplier": None,
+                                            "amount": 100, "ptype": "其他",
+                                            "reason": None})
+    bot.handle_text("ou_emp1", "采购x 100元")
+    out = bot.handle_text("ou_emp1", "取消")
+    assert "已放弃" in out
+    assert "ou_emp1" not in bot._pending
