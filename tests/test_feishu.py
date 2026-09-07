@@ -136,3 +136,72 @@ def test_employee_persisted_once(bot):
     n = bot.store.conn.execute(
         "SELECT count(*) FROM employees WHERE feishu_user_id='ou_emp9'").fetchone()[0]
     assert n == 1
+
+
+def test_mark_paid_closes_ticket(bot):
+    reply = bot.handle_text("ou_emp1", "9月5号打车300块")
+    tid = F.TICKET_ID_RE.search(reply).group(0)
+    bot.on_card_action("ou_m1", {"action": "approve", "ticket_id": tid, "role": "manager"})
+    assert bot.store.get(tid)["status"] == R.APPROVED
+    out = bot.handle_text("ou_f1", f"打款 {tid}")
+    assert "已确认打款" in out
+    assert bot.store.get(tid)["status"] == "PAID"
+    out2 = bot.handle_text("ou_f1", f"打款 {tid}")
+    assert "失败" in out2
+    paid_events = [c for _, c in bot.rec.cards if c["header"]["title"]["content"].startswith("打款确认")]
+    assert paid_events
+
+
+def test_invoice_image_merge_flow(bot, monkeypatch):
+    monkeypatch.setattr(bot, "download_image", lambda key, mid="": b"fake")
+    def fake_vision(image_b64, **kw):
+        return {"invoice_no": "62589335", "invoice_amount": 469,
+                "invoice_date": "2026-09-05", "invoice_seller": "星巴克",
+                "expense_type": "餐饮"}
+    monkeypatch.setattr(F.E, "extract_invoice_image", fake_vision)
+    monkeypatch.setattr(F.E, "extract_ticket",
+                        lambda text, **kw: {"amount": None, "currency": "CNY",
+                                            "expense_type": None,
+                                            "occurred_at": "2026-09-05",
+                                            "reason": "和客户在星巴克的工作餐",
+                                            "headcount": None, "invoice_no": None,
+                                            "invoice_seller": None,
+                                            "invoice_amount": None,
+                                            "sensitivity": "normal"})
+    out = bot.handle_image("ou_emp1", "img_key_x", "om_x")
+    assert "发票要素已识别" in out and "请补充" in out
+    reply = bot.handle_text("ou_emp1", "9月5号和客户在星巴克的工作餐")
+    assert "已受理" in reply or "自动通过" in reply
+    tickets = bot.store.conn.execute("SELECT status, amount FROM tickets").fetchall()
+    assert tickets and tickets[-1][1] == 469
+
+
+def test_invoice_crosscheck_mismatch_guards(bot, monkeypatch):
+    monkeypatch.setattr(bot, "download_image", lambda key, mid="": b"fake")
+    def fake_vision(image_b64, **kw):
+        return {"invoice_no": "X1", "invoice_amount": 999,
+                "invoice_date": "2026-09-05", "expense_type": "交通"}
+    monkeypatch.setattr(F.E, "extract_invoice_image", fake_vision)
+    monkeypatch.setattr(F.E, "extract_ticket",
+                        lambda text, **kw: {"amount": 300, "currency": "CNY",
+                                            "expense_type": "交通",
+                                            "occurred_at": "2026-09-05",
+                                            "reason": "打车", "headcount": None,
+                                            "invoice_no": "X1", "invoice_seller": None,
+                                            "invoice_amount": None,
+                                            "sensitivity": "normal"})
+    bot.handle_image("ou_emp1", "img_k", "om_k")
+    reply = bot.handle_text("ou_emp1", "9月5号打车300块，发票X1")
+    assert "不一致" in reply and "按此提交" in reply
+    ok = bot.handle_text("ou_emp1", "按此提交")
+    assert "已受理" in ok or "自动通过" in ok
+
+
+def test_pdf_signature_detection(bot, monkeypatch):
+    monkeypatch.setattr(bot, "download_file", lambda key, mid="": b"fake")
+    monkeypatch.setattr(F.E, "extract_invoice_pdf",
+                        lambda data, **kw: {"invoice_no": "P1", "invoice_amount": 300,
+                                            "invoice_date": "2026-09-05",
+                                            "e_signature": True})
+    out = bot.handle_file("ou_emp1", "fk", "om_f", "发票.pdf")
+    assert "电子签章" in out

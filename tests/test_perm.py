@@ -68,7 +68,8 @@ def test_sql_scope():
     frag, params = P.sql_scope(actor(uid="m1", role=P.MANAGER, dept="D1"))
     assert frag.startswith("dept_id = ?") and "confidential" in frag
     assert params == ["D1", "m1"]
-    assert P.sql_scope(actor(uid="f", role=P.FINANCE))[0] == "status = 'APPROVED'"
+    assert "APPROVED" in P.sql_scope(actor(uid="f", role=P.FINANCE))[0]
+    assert "PAID" in P.sql_scope(actor(uid="f", role=P.FINANCE))[0]
     assert P.sql_scope(actor(uid="b", role=P.BOSS))[0] == "1=1"
 
 

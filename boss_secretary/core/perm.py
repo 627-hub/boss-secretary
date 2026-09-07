@@ -18,6 +18,7 @@ NORMAL = "normal"
 CONFIDENTIAL = "confidential"
 
 APPROVED = "APPROVED"
+PAID = "PAID"
 
 SCOPE_ALL = "ALL"
 SCOPE_DEPT = "DEPT"
@@ -83,7 +84,7 @@ def can_view_ticket(actor: Actor, t: Ticket) -> bool:
     if actor.role == MANAGER:
         return t.dept_id is not None and t.dept_id == actor.dept_id
     if actor.role == FINANCE:
-        return t.status == APPROVED
+        return t.status in (APPROVED, PAID)
     return False
 
 
@@ -120,7 +121,7 @@ def sql_scope(actor: Actor) -> tuple[str, list[Any]]:
         return "dept_id = ? AND (sensitivity != 'confidential' OR employee_id = ?)", \
                [actor.dept_id, actor.user_id]
     if s == SCOPE_FINANCE_PENDING:
-        return "status = 'APPROVED'", []
+        return "status IN ('APPROVED', 'PAID')", []
     return "1=1", []
 
 

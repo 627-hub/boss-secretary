@@ -29,6 +29,7 @@ REVIEWING = "REVIEWING"
 AUTO_APPROVED = "AUTO_APPROVED"
 SUBMITTED = "SUBMITTED"
 APPROVED = "APPROVED"
+PAID = "PAID"
 REJECTED = "REJECTED"
 ESCALATED = "ESCALATED"
 WITHDRAWN = "WITHDRAWN"
@@ -63,13 +64,14 @@ class PermissionError_(RouterError):
 TRANSITIONS: dict[str, set[str]] = {
     DRAFT: {REVIEWING, WITHDRAWN},
     REVIEWING: {AUTO_APPROVED, SUBMITTED, REJECTED, DRAFT},
-    AUTO_APPROVED: {CANCELLED},
+    AUTO_APPROVED: {PAID, CANCELLED},
     SUBMITTED: {APPROVED, REJECTED, ESCALATED, CANCELLED, WITHDRAWN},
     ESCALATED: {APPROVED, REJECTED, CANCELLED},
-    APPROVED: {CANCELLED},
+    APPROVED: {PAID, CANCELLED},
     REJECTED: {CANCELLED},
     WITHDRAWN: set(),
     CANCELLED: set(),
+    PAID: set(),
 }
 
 
@@ -415,6 +417,18 @@ class Router:
             raise TransitionError(f"状态 {t['status']} 已终态")
         self._transition(ticket_id, t["status"], CANCELLED, BOSS_ROLE, reason)
         self._notify("ticket.cancelled", self.store.get(ticket_id) or {}, [])
+
+    def mark_paid(self, ticket_id: str, actor_id: str, actor_role: str) -> None:
+        """财务确认打款 → 单据最终关闭（PAID 终态）。"""
+        t = self.store.get(ticket_id)
+        if t is None:
+            raise RouterError(f"单据不存在: {ticket_id}")
+        if actor_role != FINANCE_CONSIGN_ROLE and actor_role != "finance":
+            raise PermissionError_("仅财务可确认打款")
+        if t["status"] not in (APPROVED, AUTO_APPROVED):
+            raise TransitionError(f"状态 {t['status']} 不可打款确认（仅已通过单）")
+        self._transition(ticket_id, t["status"], PAID, actor_id, "财务确认打款")
+        self._notify("ticket.paid", self.store.get(ticket_id) or {}, [])
 
     def resubmit(self, original_id: str, updates: Mapping[str, Any],
                  employee: Mapping[str, Any]) -> str:
