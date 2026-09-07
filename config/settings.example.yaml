@@ -50,3 +50,16 @@ budgets:
 invoice_verify:
   provider: none
   api_key: ""
+
+# 金蝶凭证导出：科目代码/映射按贵司账套调整（默认管理费用 6601xx）
+kingdee:
+  subject_map:
+    交通: "660106"
+    餐饮: "660107"
+    住宿: "660103"
+    办公: "660101"
+    其他: "660199"
+  payable_code: "2241"   # 其他应付款
+  bank_code: "1002"      # 银行存款
+  dept_map: {}           # D1: "BM001"
+  encoding: "gbk"

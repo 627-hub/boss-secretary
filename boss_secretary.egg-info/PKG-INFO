@@ -2,7 +2,69 @@ Metadata-Version: 2.4
 Name: boss-secretary
 Version: 0.1.0
 Summary: AI 秘书：飞书收单 → AI 抽取/审查 → 责任矩阵审批 → 日报/异常检测
+License: Boss Secretary 公开源许可证
+        （Boss Secretary Public Source License，v1.0，2026）
+        
+        版权所有 (c) 2026 627-hub（AI 辅助开发，人类主导并承担设计决策）
+        
+        一、定义
+        1.1 「本软件」：指本仓库所含源代码、配置、文档及其衍生作品。
+        1.2 「非商业使用」：个人学习、研究、教学，以及不以营利为目的的使用。
+        1.3 「商业使用」：指下列情形之一——
+            (a) 将本软件或其衍生作品出售、许可收费、以订阅/SaaS 等形式对外提供并收取费用；
+            (b) 将本软件或其衍生作品作为商业产品、付费服务的组成部分向第三方交付；
+            (c) 以本软件为基础对外提供有偿开发、部署、咨询、运维等服务。
+        1.4 「衍生作品」：指修改本软件、或与本软件代码合并/链接/互相调用的作品，
+            以及以本软件对外提供网络服务所运行的服务端源代码。
+        
+        二、权利授予
+        2.1 非商业使用：任何人可在遵守本许可证（保留版权与许可声明）的前提下，
+            免费使用、复制、修改、再分发本软件。
+        2.2 商业使用：仅当商业使用者**以本许可证开源其全部衍生作品**（包括集成、
+            修改及网络服务端源码，源码须可获取、可编译、含完整构建说明）时，
+            方可进行商业使用；或另行取得**版权人书面商业授权**（可免费或收费）。
+        2.3 版权人本人及其直接控制的组织豁免上述第 2.2 条义务。
+        
+        三、网络服务条款
+        3.1 以本软件或衍生作品对外提供网络服务（无论是否收费）的，应当向该服务的
+            使用者提供其所用版本的服务端源代码（等同 AGPL 第 13 条思路）。
+        
+        四、义务
+        4.1 分发或开源时须保留本许可证全文、版权声明与「非官方模型/数据源」提示。
+        4.2 不得移除或遮挡本软件内的版权标识与「Powered by Boss Secretary」字样
+            （开源衍生作品可显著位置标注）。
+        
+        五、免责声明
+        本软件按「现状」提供，不附带任何明示或默示担保。作者不对因使用本软件产生
+        的任何损失（含数据损失、财务损失、合规风险）承担责任。本软件输出不构成
+        财务、法务或审计意见。
+        
+        六、其他
+        6.1 本许可证以中文版本为准；英文译文仅供参考。
+        6.2 未在此明确授予的权利一律保留于版权人。
+        6.3 如你所在司法辖区使本许可证某条款不可执行，其余条款继续有效。
+        
+        ────────────────────────────────────────────────────────
+        
+        Boss Secretary Public Source License (English summary, unofficial)
+        
+        Copyright (c) 2026 627-hub (human-directed, AI-assisted development)
+        
+        1. NON-COMMERCIAL USE: free to use, copy, modify and redistribute, provided
+           this license and copyright notice are retained.
+        2. COMMERCIAL USE (selling, paid SaaS, bundling into commercial products, or
+           paid services built on this software) is permitted ONLY IF the commercial
+           user open-sources ALL derivative works — including integrations, server-side
+           code powering network services — under this same license; OR obtains a
+           separate written commercial grant from the copyright holder.
+        3. NETWORK SERVICE CLAUSE: those offering this software (or derivatives) as a
+           network service must make the server-side source available to that
+           service's users (AGPL §13 spirit).
+        4. The Chinese version above governs. Provided "as is", without warranty of
+           any kind. All rights not expressly granted are reserved.
+        
 Requires-Python: >=3.10
+License-File: LICENSE
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: requests>=2.31
 Requires-Dist: openpyxl>=3.1
@@ -10,3 +72,4 @@ Requires-Dist: lark-oapi>=1.4
 Requires-Dist: keyring>=25
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
+Dynamic: license-file

@@ -466,6 +466,21 @@ class SecretaryBot:
             return self._progress(sender_open_id)
         if text in ("额度", "我的额度"):
             return AL.to_table(AL.list_for(self.store.conn, sender_open_id))
+        if text.startswith("导出凭证"):
+            if sender_open_id not in (self.roles.get("finance"), self.roles.get("boss")):
+                return "仅财务/老板可导出凭证"
+            from boss_secretary.finance import export as FE
+            month = text.replace("导出凭证", "").strip() or dt.date.today().strftime("%Y-%m")
+            if not re.fullmatch(r"\d{4}-\d{2}", month):
+                return "月份格式：导出凭证 2026-09"
+            out = f"data/vouchers_{month}.csv"
+            result = FE.export_csv(self.store.conn, out, month=month,
+                                   settings=self.settings)
+            return (f"📊 {FE.summary_text(result)}\n"
+                    f"未打款单为计提凭证（借费用/贷应付），已打款单含打款凭证。"
+                    f"文件在服务器 data/ 目录，可直接金蝶引入")
+        if text in ("额度", "我的额度"):
+            return AL.to_table(AL.list_for(self.store.conn, sender_open_id))
         if any(k in text for k in ("额度", "备用金", "预算")):
             return self._allowance_request(sender_open_id, emp, text)
         if text in ("取消", "不报了"):
