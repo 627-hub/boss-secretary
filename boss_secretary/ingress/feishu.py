@@ -13,6 +13,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -196,25 +198,62 @@ class SecretaryBot:
     # ── 事件注册 ──────────────────────────────────────────────
     def build_event_handler(self) -> lark.EventDispatcherHandler:
         bot = self
+        seen_events: dict[str, float] = {}
+
+        def _dedup(event_id: str) -> bool:
+            now = time.time()
+            for k in [k for k, ts in seen_events.items() if now - ts > 300]:
+                seen_events.pop(k, None)
+            if event_id and event_id in seen_events:
+                return True
+            if event_id:
+                seen_events[event_id] = now
+            return False
+
+        def _process_message(sender: str, text: str) -> None:
+            try:
+                reply = bot.handle_text(sender, text)
+                bot.send_text(sender, reply)
+            except Exception as e:
+                print(f"[feishu] 消息处理异常: {type(e).__name__}: {e}")
+                try:
+                    bot.send_text(sender, f"处理出错: {type(e).__name__}，请稍后重试")
+                except Exception:
+                    pass
 
         def on_message(data: lark.P2ImMessageReceiveV1) -> None:
             try:
+                header = data.header
+                if _dedup(getattr(header, "event_id", "")):
+                    print("[feishu] 重投事件已去重")
+                    return
                 msg = data.event.message
                 if msg.message_type != "text":
                     return
                 sender = data.event.sender.sender_id.open_id
                 text = json.loads(msg.content).get("text", "")
                 print(f"[feishu] 收到消息 sender={sender} text={text[:50]!r}")
-                reply = bot.handle_text(sender, text)
-                bot.send_text(sender, reply)
+                threading.Thread(target=_process_message, args=(sender, text),
+                                 daemon=True).start()
             except Exception as e:
                 print(f"[feishu] 消息处理异常: {type(e).__name__}: {e}")
 
+        def _process_card(operator: str, value: Mapping) -> None:
+            try:
+                bot.send_text(operator, bot.on_card_action(operator, value))
+            except Exception as e:
+                print(f"[feishu] 卡片回调异常: {type(e).__name__}: {e}")
+
         def on_card(data: lark.P2CardActionTrigger) -> None:
             try:
+                header = data.header
+                if _dedup(getattr(header, "event_id", "")):
+                    return
                 operator = data.event.operator.open_id
                 value = data.event.action.value or {}
-                bot.send_text(operator, bot.on_card_action(operator, value))
+                print(f"[feishu] 卡片回调 operator={operator} value={value}")
+                threading.Thread(target=_process_card, args=(operator, dict(value)),
+                                 daemon=True).start()
             except Exception as e:
                 print(f"[feishu] 卡片回调异常: {type(e).__name__}: {e}")
 

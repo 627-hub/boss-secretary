@@ -121,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_ticket ON audit_log(ticket_id);
 
 
 def init_db(db_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(DDL)
     conn.commit()

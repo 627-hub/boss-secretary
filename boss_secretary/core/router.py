@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,6 +172,7 @@ class PrintNotifier:
 class SQLiteTicketStore:
     def __init__(self, db_path: str | Path, audit_dir: str | Path = "data/audit"):
         self.conn: sqlite3.Connection = MD.init_db(db_path)
+        self.lock = threading.Lock()
         self.audit_dir = Path(audit_dir) / "tickets"
         self.audit_dir.mkdir(parents=True, exist_ok=True)
 
@@ -198,16 +200,17 @@ class SQLiteTicketStore:
                   "invoice_seller": record.get("invoice_seller"),
                   "invoice_amount": record.get("invoice_amount"),
                   "ai_evidence": f"{ctx_file}|{h}"}
-        self.conn.execute(
-            "INSERT INTO tickets(ticket_id, feishu_instance_id, employee_id, dept_id,"
-            " type, status, matrix_version, sensitivity, amount, currency,"
-            " expense_type, occurred_at, reason, invoice_code, invoice_no,"
-            " invoice_seller, invoice_amount, ai_evidence)"
-            " VALUES(:ticket_id,:feishu_instance_id,:employee_id,:dept_id,:type,"
-            ":status,:matrix_version,:sensitivity,:amount,:currency,:expense_type,"
-            ":occurred_at,:reason,:invoice_code,:invoice_no,:invoice_seller,"
-            ":invoice_amount,:ai_evidence)", params)
-        self.conn.commit()
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO tickets(ticket_id, feishu_instance_id, employee_id, dept_id,"
+                " type, status, matrix_version, sensitivity, amount, currency,"
+                " expense_type, occurred_at, reason, invoice_code, invoice_no,"
+                " invoice_seller, invoice_amount, ai_evidence)"
+                " VALUES(:ticket_id,:feishu_instance_id,:employee_id,:dept_id,:type,"
+                ":status,:matrix_version,:sensitivity,:amount,:currency,:expense_type,"
+                ":occurred_at,:reason,:invoice_code,:invoice_no,:invoice_seller,"
+                ":invoice_amount,:ai_evidence)", params)
+            self.conn.commit()
         MD.append_audit(self.conn, ticket_id=tid, actor=record.get("employee_id", "?"),
                         action="ticket.create", payload_hash=h,
                         payload_file=str(ctx_file))
@@ -225,12 +228,13 @@ class SQLiteTicketStore:
         return rec
 
     def update(self, ticket_id: str, **fields: Any) -> None:
-        for k, v in fields.items():
-            if k in ("approvers", "approvals") and not isinstance(v, str):
-                v = json.dumps(v, ensure_ascii=False)
-            self.conn.execute(f"UPDATE tickets SET {k}=? WHERE ticket_id=?",
-                              (v, ticket_id))
-        self.conn.commit()
+        with self.lock:
+            for k, v in fields.items():
+                if k in ("approvers", "approvals") and not isinstance(v, str):
+                    v = json.dumps(v, ensure_ascii=False)
+                self.conn.execute(f"UPDATE tickets SET {k}=? WHERE ticket_id=?",
+                                  (v, ticket_id))
+            self.conn.commit()
 
     def list_by_status(self, *statuses: str) -> list[dict]:
         out = []
