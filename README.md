@@ -10,13 +10,15 @@
 老板改 Excel → boss-matrix import → 干跑报告(新旧对比) → commit 生效
 ```
 
-**功能模块可添加** —— 一切审核的本质是三要素契约（`core/specs.py`）：**预算（事前）× 事由/标的（发生）× 交付物文件（发票/报价单/合同）**。新增一类单据 = 一份 DocSpec + 一个抽取函数，摄取/追问/附件门/预算检查/审计管线零改动。现有报销/采购/合同/用印四类即按此模式扩展。
+**功能模块可添加** —— 一切审核的本质是三要素契约（`core/specs.py`）：**预算（事前）× 事由/标的（发生）× 交付物文件（发票/报价单/合同）**。新增一类单据 = 一份 DocSpec + 一个抽取函数，摄取/追问/附件门/预算检查/审计管线零改动。现有报销/采购/合同/用印/差旅/借款六类即按此模式扩展。
 
 | 三要素 | 报销 | 采购 | 合同 | 用印 |
 |--------|------|------|------|------|
-| 预算 | 部门/全司预算 + 额度优先核销 | 部门/全司预算 | 登记时占用检查 | — |
-| 事由/标的 | 事由 reason | 采购标的 title | 合同标的 title | 用印文件 |
-| 交付物 | 发票（图片/PDF/验真） | 合同/PO/报价单 | 合同文件 PDF（全文 AI 审查） | 用印文件 |
+| 预算 | 部门/全司预算 + 额度优先核销 | 部门/全司预算 | 登记时占用检查 | — | 出差预估+报销联动 | 借款=待冲销负债 |
+| 事由/标的 | 事由 reason | 采购标的 title | 合同标的 title | 用印文件 | 出差事由+期间 | 借款事由 |
+| 交付物 | 发票（图片/PDF/验真） | 合同/PO/报价单 | 合同文件 PDF（全文 AI 审查） | 用印文件 | 差旅申请单（事前） | 借款事由+放款凭证 |
+
+**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 179 个测试全绿
 
 PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异常检测、LLM 数据隔离等设计决策）
 
@@ -67,7 +69,7 @@ cd boss-secretary
 
 ```bash
 pip install -e .
-pytest        # 122 个测试，应全绿
+pytest        # 196 个测试，应全绿
 ```
 
 ### 2. 飞书自建应用（[open.feishu.cn](https://open.feishu.cn) → 开发者后台）
@@ -114,6 +116,17 @@ boss-budget template --out config/budgets.xlsx                  # 预算模板(�
 boss-budget import config/budgets.xlsx --db data/secretary.db   # 预算导入(可选)
 ```
 
+### 4b. 可选：第二渠道（Telegram / 企业微信）
+
+```bash
+# Telegram（长轮询，无需公网 IP）：@BotFather 建 bot 拿 token
+boss-secrets set channels.telegram.bot_token
+boss-telegram
+```
+
+企业微信：自建应用+隧道方案（回调走公网隧道转回内网，管理后台需配可信 IP），
+配置见 `config/settings.example.yaml` 的 `channels.wecom`，`boss-wecom` 启动。
+
 ### 5. 启动并拿 open_id
 
 ```bash
@@ -141,10 +154,12 @@ boss-feishu        # 长连接启动（无需公网 IP）
 ## 日常运维
 
 ```bash
-nohup python3 -u -m boss_secretary.feishu run > data/feishu_bot.log 2>&1 &   # 起服务
+nohup python3 -u -m boss_secretary.feishu run > data/feishu_bot.log 2>&1 &   # 飞书服务
 nohup python3 -u -m boss_secretary.watchdog --interval 600 > data/watchdog.log 2>&1 &   # 看门狗(掉线告警, 与服务分开跑)
-boss-daily --db data/secretary.db   # 手动日报
-tail -f data/feishu_bot.log        # 看实时日志
+boss-daily --db data/secretary.db          # 手动日报
+boss-voucher export --month 2026-09        # 金蝶凭证 CSV
+boss-report --month 2026-09                # 月度报告 docx+pptx
+tail -f data/feishu_bot.log                # 看实时日志
 kill $(pgrep -f "boss_secretary.feishu|boss_secretary.watchdog")              # 停
 ```
 
@@ -171,6 +186,8 @@ kill $(pgrep -f "boss_secretary.feishu|boss_secretary.watchdog")              # 
 | `ingress/feishu.py` | 长连接收单 + 卡片审批 + 事件桥 |
 | `core/llm.py` + `secrets.py` | OpenAI 兼容客户端（OpenRouter/vLLM/GLM）+ Keychain 密钥 |
 
+**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 179 个测试全绿
+
 PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异常检测方法、LLM 数据隔离等设计决策）。
 
 ## 安全模型
@@ -184,7 +201,8 @@ PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异�
 
 - [ ] 发票税局真查验（需第三方付费接口，adapter 已留位）
 - [ ] 金蝶/用友 API 直连（当前标准 CSV 引入）
-- [ ] 企业微信/邮件/钉钉入口、语音受理
+- [x] 企业微信渠道（v1.0.1 隧道方案）
+- [ ] 邮件/钉钉入口、语音受理
 - [ ] 本地 vLLM 部署指引（Qwen3.8-27B，数据完全不出内网）
 - [ ] SoD 规则库系统化 / 制度 RAG 问答 / 收入侧内控
 
