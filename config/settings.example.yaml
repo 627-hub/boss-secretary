@@ -79,3 +79,9 @@ audit:
   sampling_top: 10
   weights:
     suggest_threshold: 40
+
+# 第二渠道: Telegram（长轮询，无需公网 IP；找 @BotFather 建 bot 拿 token）
+channels:
+  telegram:
+    enabled: false
+    bot_token: ""

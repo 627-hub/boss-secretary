@@ -161,6 +161,7 @@ class SecretaryBot:
         self.roles = (s.get("feishu") or {}).get("roles") or {}
         self._pending: dict[str, dict] = {}
         self._last_verify: dict[str, dict] = {}
+        self._last_b64: dict[str, str] = {}
         self.settings_path = settings_path
 
     # ── 飞书 API ──────────────────────────────────────────────
@@ -267,6 +268,11 @@ class SecretaryBot:
         data = self.download_image(image_key, message_id)
         if not data:
             return "图片下载失败，请重发"
+        b64 = b64mod.b64encode(data).decode()
+        self._last_b64[sender_open_id] = b64
+        return self.handle_image_bytes(sender_open_id, data)
+
+    def handle_image_bytes(self, sender_open_id: str, data: bytes) -> str:
         emp = self.get_or_create_employee(sender_open_id)
         pend = self._pending.get(sender_open_id)
         if pend and pend.get("kind") == "procurement":
@@ -282,8 +288,9 @@ class SecretaryBot:
                 sender_open_id, emp, pend["ctx"],
                 full_text=None, source="要素（附图片合同存档）")
         try:
-            inv = E.extract_invoice_image(b64mod.b64encode(data).decode(),
-                                          settings=self.settings)
+            b64 = getattr(self, "_last_b64", {}).pop(sender_open_id, None) or \
+                __import__("base64").b64encode(data).decode()
+            inv = E.extract_invoice_image(b64, settings=self.settings)
         except L.LLMError as e:
             print(f"[feishu] 发票图片识别失败: {e}")
             return f"发票识别失败（AI 视觉）: {str(e)[:120]}"
@@ -296,6 +303,10 @@ class SecretaryBot:
         data = self.download_file(file_key, message_id)
         if not data:
             return "文件下载失败，请重发"
+        return self.handle_file_bytes(sender_open_id, data, filename)
+
+    def handle_file_bytes(self, sender_open_id: str, data: bytes,
+                          filename: str) -> str:
         emp = self.get_or_create_employee(sender_open_id)
         pend = self._pending.get(sender_open_id)
         if pend and pend.get("kind") == "procurement":

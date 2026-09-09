@@ -16,6 +16,7 @@ boss_secretary/models.py
 boss_secretary/seal.py
 boss_secretary/secrets.py
 boss_secretary/supplier.py
+boss_secretary/telegram.py
 boss_secretary/travel.py
 boss_secretary/voucher.py
 boss_secretary/watchdog.py
@@ -32,6 +33,7 @@ boss_secretary/core/anomaly.py
 boss_secretary/core/audit.py
 boss_secretary/core/backup.py
 boss_secretary/core/budget.py
+boss_secretary/core/channel.py
 boss_secretary/core/compliance.py
 boss_secretary/core/contract.py
 boss_secretary/core/extract.py
@@ -52,6 +54,7 @@ boss_secretary/finance/__init__.py
 boss_secretary/finance/export.py
 boss_secretary/ingress/__init__.py
 boss_secretary/ingress/feishu.py
+boss_secretary/ingress/telegram.py
 boss_secretary/report/__init__.py
 boss_secretary/report/daily.py
 boss_secretary/report/monthly.py
@@ -62,6 +65,7 @@ tests/test_backup_watchdog.py
 tests/test_budget_import.py
 tests/test_budget_scheduler.py
 tests/test_business.py
+tests/test_channel.py
 tests/test_compliance.py
 tests/test_daily.py
 tests/test_extract.py
@@ -76,5 +80,6 @@ tests/test_router.py
 tests/test_seal.py
 tests/test_secrets.py
 tests/test_supplier.py
+tests/test_telegram.py
 tests/test_travel_loan.py
 tests/test_voucher.py
