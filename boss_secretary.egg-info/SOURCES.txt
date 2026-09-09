@@ -20,6 +20,7 @@ boss_secretary/telegram.py
 boss_secretary/travel.py
 boss_secretary/voucher.py
 boss_secretary/watchdog.py
+boss_secretary/wecom.py
 boss_secretary.egg-info/PKG-INFO
 boss_secretary.egg-info/SOURCES.txt
 boss_secretary.egg-info/dependency_links.txt
@@ -50,11 +51,13 @@ boss_secretary/core/specs.py
 boss_secretary/core/supplier.py
 boss_secretary/core/travel.py
 boss_secretary/core/watchdog.py
+boss_secretary/core/wecom_crypto.py
 boss_secretary/finance/__init__.py
 boss_secretary/finance/export.py
 boss_secretary/ingress/__init__.py
 boss_secretary/ingress/feishu.py
 boss_secretary/ingress/telegram.py
+boss_secretary/ingress/wecom.py
 boss_secretary/report/__init__.py
 boss_secretary/report/daily.py
 boss_secretary/report/monthly.py
@@ -83,3 +86,4 @@ tests/test_supplier.py
 tests/test_telegram.py
 tests/test_travel_loan.py
 tests/test_voucher.py
+tests/test_wecom.py

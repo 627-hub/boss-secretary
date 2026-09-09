@@ -41,6 +41,7 @@ PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异�
 | 内部审计 | AI 风险评分抽检队列(6因子)→回放包(append-only 证据链)→误报/属实闭环→风险名单；审计工作台命令(仅审计/老板) |
 | 可靠性 | 心跳看门狗(独立进程，掉线飞书直告+恢复通知) + 每日自动备份(SQLite 在线 backup+审计目录，保留 N 份) |
 | Telegram 渠道 | 第二渠道验证：长轮询无公网 IP，卡片降级为文本，与飞书共用同一引擎/权限/审计 |
+| 企业微信渠道 | 自建应用+隧道方案：回调服务器(内网)+AES 加解密+主动发消息；管理后台需配可信 IP |
 | AI 归因月报 | 月报头部 LLM 生成经营简述(只用给定数字)，LLM 不可用静默跳过 |
 | 统一三要素 | 预算×事由/标的×交付物（DocSpec 契约）：所有审核类型共用摄取/追问/附件门/预算检查管线 |
 | 安全 | 权限过滤先于 LLM 上下文、机密单经理只见占位、审计 append-only、密钥入 Keychain 零明文、20 条红队用例 |
@@ -165,7 +166,7 @@ kill $(pgrep -f "boss_secretary.feishu|boss_secretary.watchdog")              # 
 | `core/specs.py` | 统一审核三要素契约（DocSpec） |
 | `core/scheduler.py` | 定时任务（日报/月报/扫查/过期/超时/备份/逾期提醒） |
 | `core/channel.py` | 渠道抽象（Envelope 契约 + ChannelAdapter + 会话分发） |
-| `ingress/telegram.py` / `core/watchdog.py` / `backup.py` | Telegram 长轮询渠道 / 掉线告警看门狗 / 数据备份 |
+| `ingress/telegram.py` / `wecom.py` / `watchdog.py` / `backup.py` | Telegram / 企业微信 / 看门狗 / 数据备份 |
 | `report/daily.py` | 日报三版渲染 |
 | `ingress/feishu.py` | 长连接收单 + 卡片审批 + 事件桥 |
 | `core/llm.py` + `secrets.py` | OpenAI 兼容客户端（OpenRouter/vLLM/GLM）+ Keychain 密钥 |

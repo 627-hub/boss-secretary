@@ -85,3 +85,14 @@ channels:
   telegram:
     enabled: false
     bot_token: ""
+
+# 企业微信（自建应用 + 隧道方案，需公网回调入口）
+channels:
+  wecom:
+    enabled: false
+    corp_id: ""
+    agent_id: 1000002
+    token: ""
+    encoding_aes_key: ""
+    secret: ""
+    port: 9898

@@ -21,7 +21,9 @@ import yaml
 SERVICE = "boss-secretary"
 
 SECRET_PATHS = ("feishu.app_secret", "llm.cloud.api_key", "llm.local.api_key",
-                "channels.telegram.bot_token")
+                "channels.telegram.bot_token",
+                "channels.wecom.secret",
+                "channels.wecom.encoding_aes_key")
 
 
 def _keyring():
