@@ -96,3 +96,10 @@ channels:
     encoding_aes_key: ""
     secret: ""
     port: 9898
+
+# Slack 渠道（Socket Mode 长连接，无需公网 IP；api.slack.com/apps 建 app）
+channels:
+  slack:
+    enabled: false
+    bot_token: ""   # xoxb-
+    app_token: ""   # xapp-（connections:write）

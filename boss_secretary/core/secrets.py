@@ -22,6 +22,8 @@ SERVICE = "boss-secretary"
 
 SECRET_PATHS = ("feishu.app_secret", "llm.cloud.api_key", "llm.local.api_key",
                 "channels.telegram.bot_token",
+                "channels.slack.bot_token",
+                "channels.slack.app_token",
                 "channels.wecom.secret",
                 "channels.wecom.encoding_aes_key")
 

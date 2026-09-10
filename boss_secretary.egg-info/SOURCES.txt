@@ -15,6 +15,7 @@ boss_secretary/matrix.py
 boss_secretary/models.py
 boss_secretary/seal.py
 boss_secretary/secrets.py
+boss_secretary/slack.py
 boss_secretary/supplier.py
 boss_secretary/telegram.py
 boss_secretary/travel.py
@@ -56,6 +57,7 @@ boss_secretary/finance/__init__.py
 boss_secretary/finance/export.py
 boss_secretary/ingress/__init__.py
 boss_secretary/ingress/feishu.py
+boss_secretary/ingress/slack.py
 boss_secretary/ingress/telegram.py
 boss_secretary/ingress/wecom.py
 boss_secretary/report/__init__.py
@@ -82,6 +84,7 @@ tests/test_perm.py
 tests/test_router.py
 tests/test_seal.py
 tests/test_secrets.py
+tests/test_slack.py
 tests/test_supplier.py
 tests/test_telegram.py
 tests/test_travel_loan.py
