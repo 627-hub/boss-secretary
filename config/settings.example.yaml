@@ -80,14 +80,12 @@ audit:
   weights:
     suggest_threshold: 40
 
-# 第二渠道: Telegram（长轮询，无需公网 IP；找 @BotFather 建 bot 拿 token）
 channels:
+  # Telegram（长轮询，无需公网 IP；找 @BotFather 建 bot 拿 token）
   telegram:
     enabled: false
     bot_token: ""
-
-# 企业微信（自建应用 + 隧道方案，需公网回调入口）
-channels:
+  # 企业微信（自建应用 + 隧道方案，需公网回调入口）
   wecom:
     enabled: false
     corp_id: ""
@@ -96,9 +94,7 @@ channels:
     encoding_aes_key: ""
     secret: ""
     port: 9898
-
-# Slack 渠道（Socket Mode 长连接，无需公网 IP；api.slack.com/apps 建 app）
-channels:
+  # Slack（Socket Mode 长连接，无需公网 IP；api.slack.com/apps 建 app）
   slack:
     enabled: false
     bot_token: ""   # xoxb-

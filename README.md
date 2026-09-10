@@ -70,7 +70,7 @@ cd boss-secretary
 ### 1. 安装
 
 ```bash
-pip install -e .
+pip install -e ".[all]"   # 含 Slack/企微/月报/发票二维码/PDF 可选依赖；最小安装用 -e .
 pytest        # 245 个测试，应全绿
 ```
 

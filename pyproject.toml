@@ -18,6 +18,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+slack = ["slack_sdk>=3.27"]
+wecom = ["pycryptodome>=3.19"]
+report = ["matplotlib>=3.8", "python-docx>=1.1", "python-pptx>=0.6.23"]
+qr = ["opencv-python>=4.9", "numpy>=1.26"]
+pdf = ["pypdf>=4.0"]
+all = [
+    "slack_sdk>=3.27",
+    "pycryptodome>=3.19",
+    "matplotlib>=3.8",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
+    "pypdf>=4.0",
+]
 
 [project.scripts]
 boss-feishu = "boss_secretary.feishu:main"

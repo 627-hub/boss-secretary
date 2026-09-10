@@ -7,3 +7,8 @@ data/
 .env
 config/settings.yaml
 docs/HANDOVER.md
+*.egg-info/
+.pytest_cache/
+*.log
+*.sqlite
+.venv/
