@@ -86,6 +86,22 @@ def test_card_to_blocks():
         "action": "approve", "ticket_id": "T1"}
 
 
+def test_card_to_blocks_form():
+    card = {"header": {"title": {"tag": "plain_text", "content": "报销审批 T1"}},
+            "elements": [{"tag": "form", "name": "f", "elements": [
+                {"tag": "input", "name": "comment",
+                 "placeholder": {"tag": "plain_text", "content": "审批意见"}},
+                {"tag": "button", "text": {"tag": "plain_text", "content": "同意"},
+                 "value": {"action": "approve", "ticket_id": "T1"}},
+                {"tag": "button", "text": {"tag": "plain_text", "content": "驳回"},
+                 "value": {"action": "reject", "ticket_id": "T1"}}]}]}
+    blocks = SL.card_to_blocks(card)
+    actions = [b for b in blocks if b["type"] == "actions"]
+    assert actions and len(actions[0]["elements"]) == 2
+    assert json.loads(actions[0]["elements"][0]["value"])["action"] == "approve"
+    assert any(b["type"] == "context" for b in blocks)
+
+
 def test_handle_socket_events_message():
     ad, bot = build_adapter()
     req = FakeReq("events_api", {"event": {

@@ -2,6 +2,7 @@ import datetime as dt
 
 import pytest
 
+from boss_secretary.core import approvals as AP
 from boss_secretary.core import audit as AU
 from boss_secretary.core.router import SQLiteTicketStore
 
@@ -56,11 +57,14 @@ def test_replay_package(conn, tmp_path):
     conn.execute("INSERT INTO audit_log(ticket_id, actor, action, payload_hash)"
                  " VALUES('T-BIG','boss','status.REVIEWING→SUBMITTED','abc')")
     conn.commit()
+    AP.record(conn, doc_type="ticket", doc_id="T-BIG", actor="boss", role="boss",
+              decision=AP.REJECT, comment="事由不充分")
     fp = AU.replay_package(conn, "T-BIG", audit_dir=tmp_path)
     text = fp.read_text(encoding="utf-8")
     assert "回放包 T-BIG" in text and "审计轨迹" in text
     assert "status.REVIEWING→SUBMITTED" in text
     assert "REVIEWING→SUBMITTED" in text
+    assert "审批意见" in text and "事由不充分" in text
 
 
 def test_anomaly_status_and_risk_list(conn):

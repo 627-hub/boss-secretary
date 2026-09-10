@@ -1,8 +1,10 @@
 import datetime as dt
 import json
+import re
 
 import pytest
 
+from boss_secretary.core import approvals as AP
 from boss_secretary.core import budget as BG
 from boss_secretary.core import contract as CT
 from boss_secretary.core import extract as E
@@ -10,11 +12,21 @@ from boss_secretary.core import router as R
 from boss_secretary.ingress import feishu as F
 
 
+def _buttons(card):
+    for el in card["elements"]:
+        if el.get("tag") == "form":
+            return [e for e in el["elements"] if e.get("tag") == "button"]
+        if el.get("tag") == "action":
+            return el["actions"]
+    return []
+
+
 @pytest.fixture()
 def bot(tmp_path, monkeypatch):
     settings = {
         "feishu": {"app_id": "x", "app_secret": "y",
-                   "roles": {"manager": "ou_m1", "boss": "ou_b1", "finance": "ou_f1"}},
+                   "roles": {"manager": "ou_m1", "boss": "ou_b1",
+                             "finance": "ou_f1", "legal": "ou_l1"}},
         "storage": {"db_path": str(tmp_path / "s.db"),
                     "audit_dir": str(tmp_path / "audit")},
         "matrix": {"active": {"reimburse": "config/matrix/reimburse_v1.yaml"}},
@@ -57,9 +69,21 @@ def bot(tmp_path, monkeypatch):
 def test_approval_card_shape():
     card = F.approval_card("T1", 300, "打车", "manager")
     assert card["header"]["title"]["content"] == "报销审批 T1"
-    buttons = card["elements"][-1]["actions"]
+    form = card["elements"][-1]
+    assert form["tag"] == "form"
+    inputs = [e for e in form["elements"] if e.get("tag") == "input"]
+    assert inputs and inputs[0]["name"] == "comment"
+    buttons = _buttons(card)
     assert buttons[0]["value"]["action"] == "approve"
     assert buttons[1]["value"]["role"] == "manager"
+
+
+def test_approval_card_shows_history():
+    card = F.approval_card("T1", 300, "打车", "boss", history=[
+        {"role": "manager", "decision": "approve", "comment": "金额属实",
+         "created_at": "2026-09-10 10:00:00"}])
+    text = json.dumps(card, ensure_ascii=False)
+    assert "审批意见" in text and "经理" in text and "金额属实" in text
 
 
 def test_submit_flow_creates_and_routes_card(bot):
@@ -74,13 +98,13 @@ def test_submit_flow_creates_and_routes_card(bot):
     assert len(bot.rec.cards) == 1
     oid, card = bot.rec.cards[0]
     assert oid == "ou_m1"
-    assert card["elements"][-1]["actions"][0]["value"]["ticket_id"] == tid
+    assert _buttons(card)[0]["value"]["ticket_id"] == tid
 
 
 def test_card_action_approve_completes_cosign(bot):
     bot.handle_text("ou_emp1", "9月5号打车300块")
     oid, card = bot.rec.cards[0]
-    tid = card["elements"][-1]["actions"][0]["value"]["ticket_id"]
+    tid = _buttons(card)[0]["value"]["ticket_id"]
     out = bot.on_card_action("ou_m1", {"action": "approve", "ticket_id": tid,
                                        "role": "manager"})
     assert "会签完成" in out
@@ -90,7 +114,7 @@ def test_card_action_approve_completes_cosign(bot):
 def test_card_action_reject(bot):
     bot.handle_text("ou_emp1", "9月5号打车300块")
     _, card = bot.rec.cards[0]
-    tid = card["elements"][-1]["actions"][0]["value"]["ticket_id"]
+    tid = _buttons(card)[0]["value"]["ticket_id"]
     out = bot.on_card_action("ou_b1", {"action": "reject", "ticket_id": tid,
                                        "role": "manager"})
     assert "已驳回" in out
@@ -100,7 +124,7 @@ def test_card_action_reject(bot):
 def test_card_action_invalid_role(bot):
     bot.handle_text("ou_emp1", "9月5号打车300块")
     _, card = bot.rec.cards[0]
-    tid = card["elements"][-1]["actions"][0]["value"]["ticket_id"]
+    tid = _buttons(card)[0]["value"]["ticket_id"]
     out = bot.on_card_action("ou_x", {"action": "approve", "ticket_id": tid,
                                       "role": "finance_consign"})
     assert "操作失败" in out
@@ -303,3 +327,92 @@ def test_procurement_budget_warn(bot, monkeypatch):
     monkeypatch.setattr(bot, "download_image", lambda key, mid="": b"fake")
     out = bot.handle_image("ou_emp1", "k", "m")
     assert "超预算" in out and "已用 0/预算 500" in out
+
+
+def _big_extract(text, **kw):
+    return {"amount": 6000, "currency": "CNY", "expense_type": "交通",
+            "occurred_at": "2026-09-05", "reason": "团建包车", "headcount": None,
+            "invoice_no": "5002", "invoice_seller": "滴滴", "invoice_amount": 6000,
+            "sensitivity": "normal"}
+
+
+def test_ticket_comment_forwarded_to_next_and_finance(bot, monkeypatch):
+    monkeypatch.setattr(F.E, "extract_ticket", _big_extract)
+    reply = bot.handle_text("ou_emp1", "9月5号团建包车6000块")
+    tid = F.TICKET_ID_RE.search(reply).group(0)
+    assert "manager" in reply and "boss" in reply
+
+    out = bot.on_card_action("ou_m1", {"action": "approve", "ticket_id": tid,
+                                       "role": "manager"}, "金额属实，可报销")
+    assert "已附意见" in out
+    boss_cards = [c for oid, c in bot.rec.cards if oid == "ou_b1"]
+    assert any("金额属实，可报销" in json.dumps(c, ensure_ascii=False)
+               for c in boss_cards)
+
+    out2 = bot.on_card_action("ou_b1", {"action": "approve", "ticket_id": tid,
+                                        "role": "boss"}, "同意")
+    assert "会签完成" in out2
+    assert bot.store.get(tid)["status"] == R.APPROVED
+    hist = AP.history(bot.store.conn, "ticket", tid)
+    assert [h["comment"] for h in hist] == ["金额属实，可报销", "同意"]
+    finance_cards = [c for oid, c in bot.rec.cards if oid == "ou_f1"]
+    assert any("金额属实，可报销" in json.dumps(c, ensure_ascii=False)
+               for c in finance_cards)
+
+
+def test_ticket_reject_comment_returned_to_chain(bot, monkeypatch):
+    monkeypatch.setattr(F.E, "extract_ticket", _big_extract)
+    reply = bot.handle_text("ou_emp1", "9月5号团建包车6000块")
+    tid = F.TICKET_ID_RE.search(reply).group(0)
+    bot.on_card_action("ou_m1", {"action": "approve", "ticket_id": tid,
+                                 "role": "manager"})
+    out = bot.on_card_action("ou_b1", {"action": "reject", "ticket_id": tid,
+                                       "role": "boss"}, "预算不足，下月再报")
+    assert "已驳回" in out
+    assert bot.store.get(tid)["status"] == R.REJECTED
+    for oid in ("ou_emp1", "ou_m1"):
+        texts = [t for o, t in bot.rec.texts if o == oid]
+        assert any("预算不足，下月再报" in t for t in texts)
+    hist = AP.history(bot.store.conn, "ticket", tid)
+    assert hist[-1]["decision"] == AP.REJECT
+    assert hist[-1]["comment"] == "预算不足，下月再报"
+
+
+def test_contract_comment_forwarded_and_reject_returned(bot, monkeypatch):
+    monkeypatch.setattr(F.E, "extract_contract",
+                        lambda text, **kw: {"title": "XX设备采购合同",
+                                            "supplier": "YY公司", "amount": 80000,
+                                            "start_date": "2026-09-01",
+                                            "end_date": "2027-08-31",
+                                            "payment_terms": "分三期"})
+    monkeypatch.setattr(F.E, "review_contract",
+                        lambda text, points, **kw: {"verdict": "PASS", "risks": [],
+                                                    "missing": []})
+    out = bot.handle_text("ou_emp1", "登记合同 XX设备采购合同 供应商YY 80000元 "
+                                     "2026-09-01至2027-08-31 分三期")
+    assert "合同要素已登记" in out
+    pend = bot._pending["ou_emp1"]
+    out2 = bot._finalize_contract("ou_emp1", bot.get_or_create_employee("ou_emp1"),
+                                  pend["ctx"], full_text="合同全文",
+                                  source="合同文件全文")
+    assert "合同已提交" in out2
+    cid = re.search(r"C\d{8}-[0-9A-F]{6}", out2).group(0)
+
+    r = bot.on_card_action("ou_l1", {"action": "contract_approve",
+                                     "contract_id": cid}, "条款已核，建议签署")
+    assert "等待 boss 会签" in r
+    boss_cards = [c for oid, c in bot.rec.cards
+                  if oid == "ou_b1"
+                  and "合同审批" in c["header"]["title"]["content"]]
+    assert boss_cards and "条款已核，建议签署" in json.dumps(boss_cards[-1],
+                                                              ensure_ascii=False)
+
+    r2 = bot.on_card_action("ou_b1", {"action": "contract_reject",
+                                      "contract_id": cid}, "金额超授权，退回重谈")
+    assert "已拒绝" in r2
+    emp_texts = [t for oid, t in bot.rec.texts if oid == "ou_emp1"]
+    assert any("金额超授权，退回重谈" in t for t in emp_texts)
+    legal_texts = [t for oid, t in bot.rec.texts if oid == "ou_l1"]
+    assert any("金额超授权，退回重谈" in t for t in legal_texts)
+    hist = AP.history(bot.store.conn, "contract", cid)
+    assert [h["decision"] for h in hist] == [AP.APPROVE, AP.REJECT]

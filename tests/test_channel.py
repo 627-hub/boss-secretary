@@ -76,6 +76,18 @@ def test_card_to_text_fallback():
     assert "同意 / 驳回" in text
 
 
+def test_card_to_text_form_fallback():
+    card = {"header": {"title": {"content": "报销审批 T1"}},
+            "elements": [
+                {"tag": "form", "name": "f", "elements": [
+                    {"tag": "input", "name": "comment",
+                     "placeholder": {"tag": "plain_text", "content": "审批意见"}},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "同意"}},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "驳回"}}]}]}
+    text = card_to_text(card)
+    assert "审批意见" in text and "同意 / 驳回" in text
+
+
 def test_channel_adapter_abc():
     with pytest.raises(TypeError):
         ChannelAdapter()

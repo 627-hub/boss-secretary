@@ -9,21 +9,23 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
-import uuid
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import yaml
 
+from boss_secretary.core import approvals as AP
 from boss_secretary.core import compliance as C
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
 
 EXPENSE_TYPES = ("交通", "餐饮", "住宿", "办公", "其他")
 
-PENDING = "pending"
-ACTIVE = "active"
-EXHAUSTED = "EXHAUSTED"
-REJECTED = "rejected"
-EXPIRED = "expired"
-REVOKED = "revoked"
+PENDING = ST.Doc.PENDING
+ACTIVE = ST.Doc.ACTIVE
+EXHAUSTED = ST.Doc.EXHAUSTED
+REJECTED = ST.Doc.REJECTED
+EXPIRED = ST.Doc.EXPIRED
+REVOKED = ST.Doc.REVOKED
 
 DEFAULT_CFG = {"max_manager_grant": 1000.0, "default_expire_days": 30}
 
@@ -36,14 +38,14 @@ def load_config(path: str | None = None) -> dict:
     return cfg
 
 
-def _now() -> dt.datetime:
+def _now_dt() -> dt.datetime:
     return dt.datetime.now()
 
 
 def create_request(conn, employee_id: str, category: str, amount: float,
                    reason: str = "", created_by: str = "",
                    expense_types: Sequence[str] = (), cfg: dict | None = None) -> dict:
-    aid = f"A{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+    aid = DB.new_id("A")
     cfg = cfg or load_config()
     role = "boss" if amount > float(cfg["max_manager_grant"]) else "manager"
     expires = (dt.date.today() + dt.timedelta(
@@ -62,30 +64,30 @@ def create_request(conn, employee_id: str, category: str, amount: float,
 
 
 def get(conn, allowance_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM allowances WHERE allowance_id=?",
-                       (allowance_id,)).fetchone()
-    if row is None:
+    rec = DB.fetch_one(conn, "allowances", "allowance_id", allowance_id)
+    if rec is None:
         return None
-    rec = dict(zip([c[0] for c in conn.execute(
-        "SELECT * FROM allowances LIMIT 1").description], row))
     rec["expense_types"] = json.loads(rec.get("expense_types") or "[]")
     return rec
 
 
-def decide(conn, allowance_id: str, actor_id: str, approve: bool) -> dict | None:
+def decide(conn, allowance_id: str, actor_id: str, approve: bool,
+           note: str = "") -> dict | None:
     a = get(conn, allowance_id)
     if a is None or a["status"] != PENDING:
         return None
     new = ACTIVE if approve else REJECTED
-    conn.execute("UPDATE allowances SET status=?, created_by=? WHERE allowance_id=?",
-                 (new, actor_id, allowance_id))
-    conn.commit()
+    AP.record(conn, doc_type="allowance", doc_id=allowance_id, actor=actor_id,
+              role=str(a.get("approver_role") or ""), decision=AP.APPROVE
+              if approve else AP.REJECT, comment=note)
+    DB.update_fields(conn, "allowances", "allowance_id", allowance_id,
+                     status=new, created_by=actor_id)
     a["status"] = new
     return a
 
 
 def is_expired(a: Mapping, now: dt.datetime | None = None) -> bool:
-    now = now or _now()
+    now = now or _now_dt()
     exp = a.get("expires_at")
     if not exp:
         return False
@@ -102,7 +104,7 @@ def remaining(a: Mapping) -> float:
 def match(conn, employee_id: str, ctx: Mapping, now: dt.datetime | None = None
           ) -> tuple[dict | None, float]:
     """找覆盖该报销的最早生效额度；返回 (allowance|None, 超出部分)。"""
-    now = now or _now()
+    now = now or _now_dt()
     etype = ctx.get("expense_type")
     amount = float(ctx.get("amount") or 0)
     rows = conn.execute(
@@ -133,21 +135,20 @@ def consume(conn, allowance_id: str, amount: float) -> float:
         raise ValueError("额度不存在")
     used = float(a.get("used_amount") or 0) + float(amount)
     status = EXHAUSTED if used >= float(a["total_amount"]) else a["status"]
-    conn.execute("UPDATE allowances SET used_amount=?, status=? WHERE allowance_id=?",
-                 (used, status, allowance_id))
-    conn.commit()
+    DB.update_fields(conn, "allowances", "allowance_id", allowance_id,
+                     used_amount=used, status=status)
     return max(0.0, float(a["total_amount"]) - used)
 
 
 def expire_sweep(conn, now: dt.datetime | None = None) -> int:
-    now = now or _now()
+    now = now or _now_dt()
     n = 0
     for (aid,) in conn.execute(
             "SELECT allowance_id FROM allowances WHERE status=?", (ACTIVE,)).fetchall():
         a = get(conn, aid)
         if a and is_expired(a, now):
-            conn.execute("UPDATE allowances SET status=? WHERE allowance_id=?",
-                         (EXPIRED, aid))
+            DB.update_fields(conn, "allowances", "allowance_id", aid,
+                             status=EXPIRED)
             n += 1
     conn.commit()
     return n
@@ -204,10 +205,12 @@ def extract_allowance(text: str, *, llm_fn=None, settings: Mapping | None = None
 
 def list_for(conn, employee_id: str, include_all: bool = False) -> list[dict]:
     sql = "SELECT allowance_id FROM allowances WHERE employee_id=?"
+    args: list = [employee_id]
     if not include_all:
-        sql += " AND status IN ('active','pending','EXHAUSTED')"
+        sql += " AND status IN (?,?,?)"
+        args += [ACTIVE, PENDING, EXHAUSTED]
     sql += " ORDER BY created_at DESC LIMIT 10"
-    return [get(conn, r[0]) for r in conn.execute(sql, (employee_id,)).fetchall()]
+    return [get(conn, r[0]) for r in conn.execute(sql, args).fetchall()]
 
 
 def to_table(rows: Sequence[Mapping]) -> str:

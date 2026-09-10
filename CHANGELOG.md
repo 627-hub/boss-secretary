@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### 审批意见流转（全审批类型）
+- 统一审批动作层 `core/approvals.py` + `approval_actions` 表：意见采集/记录/查阅一处收敛，七类审批共用
+- 飞书审批卡片内嵌意见输入框（form + form_submit）；同意附意见 → 自动附送下一级查阅（更新卡片）
+- 驳回意见回传提交人与链路其他审批人；合同/供应商/用印/差旅/借款/额度全部接入
+- 打款卡片、合同/供应商会签卡均展示审批意见；回放包新增「审批意见」明文段落
+- Slack/文本渠道表单降级兼容（按钮照常，输入框降为提示）
+- 测试 179 → 216
+
+### 内部重构（模块化 P0，见 docs/MODULARIZATION.md）
+- 新增 `core/db.py` 数据访问共用件：消除 5 处 `_now/_id` 重复、5 处行解码、20+ 处手写 UPDATE
+- 新增 `core/status.py` 状态常量唯一事实源：值不变、兼容既有数据（供应商 `pending_review` 历史值锁定）
+- 测试 216 → 222
+
+### 内部重构（模块化 P1，见 docs/MODULARIZATION.md）
+- 新增 `core/cards.py`：9 张卡片声明式构建，飞书/文本/Slack 共用同一中间表示
+- `ingress/feishu.py` 拆出 `actions.py`（16 个卡片动作注册表）与 `commands.py`（22 个私聊命令注册表）：1769 → 851 行
+- `core/extract.py` 抽取注册表（单据类型→函数动态解析）+ 出差提示词收编为 `extract_trip`
+- 测试 222 → 234
+
+### 内部重构（模块化 P2，见 docs/MODULARIZATION.md）
+- 新增 `core/policy.py`：决策通知策略，六类入口决策的文案与送达统一（意见后缀/驳回文案/链路同步）
+- 新增 `core/notify.py`：通知出口，发送异常隔离 + 去重；actions/commands/事件桥全部接入
+- `models.py` 迁移版本化（`SCHEMA_VERSION` + `MIGRATIONS` + `PRAGMA user_version`），兼容无版本号老库
+- 测试 234 → 245
+
 ## v1.0.0 (2026-09-07)
 
 首个正式版。六类单据全生命周期 + 内控监督闭环 + 生产可靠性。

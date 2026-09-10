@@ -9,37 +9,30 @@
 """
 from __future__ import annotations
 
-import datetime as dt
 import re
-import uuid
-from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
-PENDING = "pending"
-APPROVED = "approved"
-REJECTED = "rejected"
-USED = "used"
-VOIDED = "voided"
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
 
-SEAL_ACTIVE = "active"
-SEAL_FROZEN = "frozen"
-SEAL_VOIDED = "voided"
+PENDING = ST.Doc.PENDING
+APPROVED = ST.Doc.APPROVED
+REJECTED = ST.Doc.REJECTED
+USED = ST.Doc.USED
+VOIDED = ST.Doc.VOIDED
+
+SEAL_ACTIVE = ST.Doc.ACTIVE
+SEAL_FROZEN = ST.Doc.FROZEN
+SEAL_VOIDED = ST.Doc.VOIDED
 
 BLANK_PAT = re.compile(r"空白")
-
-
-def _now() -> str:
-    return dt.datetime.now().isoformat(timespec="seconds")
-
-
-def _id(prefix: str) -> str:
-    return f"{prefix}{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
 
 
 # ── 印章台账 ──────────────────────────────────────────────────
 
 def create_seal(conn, name: str, custodian: str) -> dict:
-    sid = _id("SE")
+    sid = DB.new_id("SE")
     conn.execute("INSERT INTO seals(seal_id, name, custodian) VALUES(?,?,?)",
                  (sid, name, custodian))
     conn.commit()
@@ -47,11 +40,7 @@ def create_seal(conn, name: str, custodian: str) -> dict:
 
 
 def get_seal(conn, seal_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM seals WHERE seal_id=?", (seal_id,)).fetchone()
-    if row is None:
-        return None
-    return dict(zip([c[0] for c in conn.execute("SELECT * FROM seals LIMIT 1")
-                     .description], row))
+    return DB.fetch_one(conn, "seals", "seal_id", seal_id)
 
 
 def find_seal_by_name(conn, name: str) -> dict | None:
@@ -90,7 +79,7 @@ def request(conn, *, seal_id: str, applicant: str, doc_title: str,
         if c["status"] != CT.ACTIVE:
             raise ValueError(f"关联合同 {contract_id} 状态为 {c['status']}，"
                              f"未生效不得用合同专用章")
-    rid = _id("Y")
+    rid = DB.new_id("Y")
     conn.execute(
         "INSERT INTO seal_requests(request_id, seal_id, seal_name, applicant,"
         " doc_title, doc_type, copies, reason, contract_id, status, evidence_file)"
@@ -104,12 +93,7 @@ def request(conn, *, seal_id: str, applicant: str, doc_title: str,
 
 
 def get_request(conn, request_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM seal_requests WHERE request_id=?",
-                       (request_id,)).fetchone()
-    if row is None:
-        return None
-    return dict(zip([c[0] for c in conn.execute(
-        "SELECT * FROM seal_requests LIMIT 1").description], row))
+    return DB.fetch_one(conn, "seal_requests", "request_id", request_id)
 
 
 def decide(conn, request_id: str, approver: str, approve: bool,
@@ -121,12 +105,15 @@ def decide(conn, request_id: str, approver: str, approve: bool,
         raise ValueError(f"状态 {r['status']} 不可审批")
     self_flag = 1 if r["applicant"] == approver else 0
     new = APPROVED if approve else REJECTED
-    conn.execute(
-        "UPDATE seal_requests SET status=?, approver=?, self_approved=?, used_at=?"
-        " WHERE request_id=?",
-        (new, f"{approver}({note})" if note else approver, self_flag,
-         _now() if new == USED else None, request_id))
-    conn.commit()
+    role = approver_role_for(r["seal_name"])
+    AP.record(conn, doc_type="seal", doc_id=request_id, actor=approver,
+              role=role, decision=AP.APPROVE if approve else AP.REJECT,
+              comment=note)
+    DB.update_fields(conn, "seal_requests", "request_id", request_id,
+                     status=new,
+                     approver=f"{approver}({note})" if note else approver,
+                     self_approved=self_flag,
+                     used_at=DB.now() if new == USED else None)
     r = get_request(conn, request_id)
     r["approver_role"] = approver_role_for(r["seal_name"])
     return r
@@ -138,18 +125,16 @@ def mark_used(conn, request_id: str, actor: str) -> None:
         raise ValueError(f"用印申请不存在: {request_id}")
     if r["status"] != APPROVED:
         raise ValueError(f"状态 {r['status']} 不可确认用印（先审批）")
-    conn.execute("UPDATE seal_requests SET status=?, used_at=? WHERE request_id=?",
-                 (USED, _now(), request_id))
-    conn.commit()
+    DB.update_fields(conn, "seal_requests", "request_id", request_id,
+                     status=USED, used_at=DB.now())
 
 
 def void_request(conn, request_id: str, actor: str) -> None:
     r = get_request(conn, request_id)
     if r is None or r["status"] in (USED, VOIDED):
         raise ValueError("状态不可作废")
-    conn.execute("UPDATE seal_requests SET status=? WHERE request_id=?",
-                 (VOIDED, request_id))
-    conn.commit()
+    DB.update_fields(conn, "seal_requests", "request_id", request_id,
+                     status=VOIDED)
 
 
 def list_requests(conn, applicant: str | None = None, limit: int = 15) -> list[dict]:

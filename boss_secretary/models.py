@@ -242,6 +242,17 @@ CREATE TABLE IF NOT EXISTS audit_log(
   payload_file TEXT
 );
 
+CREATE TABLE IF NOT EXISTS approval_actions(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_type TEXT NOT NULL,
+  doc_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  role TEXT,
+  decision TEXT NOT NULL,
+  comment TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TRIGGER IF NOT EXISTS audit_log_no_update
 BEFORE UPDATE ON audit_log
 BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
@@ -253,18 +264,35 @@ BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
 CREATE INDEX IF NOT EXISTS idx_tickets_employee ON tickets(employee_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_dept ON tickets(dept_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ticket ON audit_log(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_approval_actions_doc ON approval_actions(doc_type, doc_id);
 """
+
+# 模式版本：新增结构变更时 +1，并在 MIGRATIONS 追加 (版本, 语句)。
+# DDL 是"当前最新 schema"（全部 IF NOT EXISTS，新库一次建全）；
+# MIGRATIONS 只处理老库的增量结构（如加列），靠 PRAGMA user_version 只跑一次。
+SCHEMA_VERSION = 1
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (1, "ALTER TABLE tickets ADD COLUMN allowance_id TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    for version, stmt in MIGRATIONS:
+        if version <= current:
+            continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # 无版本号的老库可能已手工加过该列
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def init_db(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(DDL)
-    for stmt in ("ALTER TABLE tickets ADD COLUMN allowance_id TEXT",):
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass
+    _migrate(conn)
     conn.commit()
     return conn
 

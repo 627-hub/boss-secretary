@@ -10,38 +10,29 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import uuid
-from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
-PENDING_REVIEW = "pending_review"
-REVIEWING = "reviewing"
-ACTIVE = "active"
-EXPIRING = "expiring"
-RENEWED = "renewed"
-CLOSED = "closed"
-REJECTED = "rejected"
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
 
-PAY_PENDING = "pending"
-PAY_PAID = "paid"
-PAY_REJECTED = "rejected"
+PENDING_REVIEW = ST.Doc.PENDING_REVIEW
+REVIEWING = ST.Doc.REVIEWING
+ACTIVE = ST.Doc.ACTIVE
+EXPIRING = ST.Doc.EXPIRING
+RENEWED = ST.Doc.RENEWED
+CLOSED = ST.Doc.CLOSED
+REJECTED = ST.Doc.REJECTED
 
-
-def _now() -> str:
-    return dt.datetime.now().isoformat(timespec="seconds")
-
-
-def _id(prefix: str) -> str:
-    return f"{prefix}{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+PAY_PENDING = ST.Payment.PENDING
+PAY_PAID = ST.Payment.PAID
+PAY_REJECTED = ST.Payment.REJECTED
 
 
 def get(conn, contract_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM contracts WHERE contract_id=?",
-                       (contract_id,)).fetchone()
-    if row is None:
+    rec = DB.fetch_one(conn, "contracts", "contract_id", contract_id)
+    if rec is None:
         return None
-    rec = dict(zip([c[0] for c in conn.execute(
-        "SELECT * FROM contracts LIMIT 1").description], row))
     try:
         rec["approvers"] = json.loads(rec["approvers"]) if rec.get("approvers") else []
     except (TypeError, ValueError):
@@ -53,14 +44,16 @@ def get(conn, contract_id: str) -> dict | None:
     return rec
 
 
-def _upsert_approvers(conn, contract_id: str, role: str, user_id: str) -> None:
+def _upsert_approvers(conn, contract_id: str, role: str, user_id: str) -> bool:
     c = get(conn, contract_id)
     approvals = c.get("approvers") or []
-    if not any(a.get("role") == role for a in approvals):
-        approvals.append({"role": role, "user_id": user_id})
-        conn.execute("UPDATE contracts SET approvers=?, updated_at=? WHERE contract_id=?",
-                     (json.dumps(approvals, ensure_ascii=False), _now(), contract_id))
-        conn.commit()
+    if any(a.get("role") == role for a in approvals):
+        return False
+    approvals.append({"role": role, "user_id": user_id})
+    DB.update_fields(conn, "contracts", "contract_id", contract_id,
+                     approvers=json.dumps(approvals, ensure_ascii=False),
+                     updated_at=DB.now())
+    return True
 
 
 def create(conn, *, employee_id: str, dept_id: str | None, title: str,
@@ -68,7 +61,7 @@ def create(conn, *, employee_id: str, dept_id: str | None, title: str,
            end_date: str | None, payment_terms: str | None = None,
            procurement_id: str | None = None, ai_review: dict | None = None,
            evidence_file: str | None = None) -> str:
-    cid = _id("C")
+    cid = DB.new_id("C")
     conn.execute(
         "INSERT INTO contracts(contract_id, employee_id, dept_id, title, supplier,"
         " amount, start_date, end_date, payment_terms, status, procurement_id,"
@@ -81,36 +74,39 @@ def create(conn, *, employee_id: str, dept_id: str | None, title: str,
     return cid
 
 
-def approve(conn, contract_id: str, actor_id: str, role: str) -> str:
+def approve(conn, contract_id: str, actor_id: str, role: str,
+            comment: str = "") -> str:
     c = get(conn, contract_id)
     if c is None:
         raise ValueError(f"合同不存在: {contract_id}")
     if c["status"] not in (PENDING_REVIEW, REVIEWING):
         raise ValueError(f"状态 {c['status']} 不可审批")
-    _upsert_approvers(conn, contract_id, role, actor_id)
+    if _upsert_approvers(conn, contract_id, role, actor_id):
+        AP.record(conn, doc_type="contract", doc_id=contract_id, actor=actor_id,
+                  role=role, decision=AP.APPROVE, comment=comment)
     c = get(conn, contract_id)
     done = {a["role"] for a in c["approvers"]}
     required = {"legal", "boss"}
     if required <= done:
-        conn.execute("UPDATE contracts SET status=?, updated_at=? WHERE contract_id=?",
-                     (ACTIVE, _now(), contract_id))
-        conn.commit()
+        DB.update_fields(conn, "contracts", "contract_id", contract_id,
+                         status=ACTIVE, updated_at=DB.now())
         return ACTIVE
-    conn.execute("UPDATE contracts SET status=?, updated_at=? WHERE contract_id=?",
-                 (REVIEWING, _now(), contract_id))
-    conn.commit()
+    DB.update_fields(conn, "contracts", "contract_id", contract_id,
+                     status=REVIEWING, updated_at=DB.now())
     return REVIEWING
 
 
-def reject(conn, contract_id: str, actor_id: str, role: str, reason: str = "") -> None:
+def reject(conn, contract_id: str, actor_id: str, role: str,
+           reason: str = "") -> None:
     c = get(conn, contract_id)
     if c is None:
         raise ValueError(f"合同不存在: {contract_id}")
     if c["status"] not in (PENDING_REVIEW, REVIEWING):
         raise ValueError(f"状态 {c['status']} 不可驳回")
-    conn.execute("UPDATE contracts SET status=?, updated_at=? WHERE contract_id=?",
-                 (REJECTED, _now(), contract_id))
-    conn.commit()
+    AP.record(conn, doc_type="contract", doc_id=contract_id, actor=actor_id,
+              role=role, decision=AP.REJECT, comment=reason)
+    DB.update_fields(conn, "contracts", "contract_id", contract_id,
+                     status=REJECTED, updated_at=DB.now())
 
 
 def renew(conn, old_id: str, new_end_date: str, amount: float | None = None,
@@ -120,9 +116,8 @@ def renew(conn, old_id: str, new_end_date: str, amount: float | None = None,
         raise ValueError(f"合同不存在: {old_id}")
     if old["status"] not in (ACTIVE, EXPIRING):
         raise ValueError(f"状态 {old['status']} 不可续签")
-    conn.execute("UPDATE contracts SET status=?, updated_at=? WHERE contract_id=?",
-                 (RENEWED, _now(), old_id))
-    conn.commit()
+    DB.update_fields(conn, "contracts", "contract_id", old_id,
+                     status=RENEWED, updated_at=DB.now())
     return create(conn, employee_id=old["employee_id"], dept_id=old["dept_id"],
                   title=old["title"], supplier=old["supplier"],
                   amount=amount if amount is not None else old["amount"],
@@ -137,9 +132,8 @@ def close(conn, contract_id: str, reason: str = "到期关闭") -> None:
         raise ValueError(f"合同不存在: {contract_id}")
     if c["status"] not in (ACTIVE, EXPIRING):
         raise ValueError(f"状态 {c['status']} 不可关闭")
-    conn.execute("UPDATE contracts SET status=?, updated_at=? WHERE contract_id=?",
-                 (CLOSED, _now(), contract_id))
-    conn.commit()
+    DB.update_fields(conn, "contracts", "contract_id", contract_id,
+                     status=CLOSED, updated_at=DB.now())
 
 
 def paid_total(conn, contract_id: str) -> float:
@@ -152,7 +146,7 @@ def paid_total(conn, contract_id: str) -> float:
 def create_payment(conn, *, contract_id: str | None, procurement_id: str | None,
                    amount: float, seq: str = "", employee_id: str = "",
                    note: str = "") -> str:
-    pid = _id("PM")
+    pid = DB.new_id("PM")
     conn.execute(
         "INSERT INTO payments(payment_id, contract_id, procurement_id, amount,"
         " seq, status, employee_id, note) VALUES(?,?,?,?,?,?,?,?)",
@@ -169,9 +163,8 @@ def pay(conn, payment_id: str, actor_id: str = "finance") -> dict:
         raise ValueError(f"付款单不存在: {payment_id}")
     if row[0] != PAY_PENDING:
         raise ValueError(f"状态 {row[0]} 不可打款")
-    conn.execute("UPDATE payments SET status=?, paid_at=? WHERE payment_id=?",
-                 (PAY_PAID, _now(), payment_id))
-    conn.commit()
+    DB.update_fields(conn, "payments", "payment_id", payment_id,
+                     status=PAY_PAID, paid_at=DB.now())
     pm = dict(zip(("payment_id", "contract_id"), conn.execute(
         "SELECT payment_id, contract_id FROM payments WHERE payment_id=?",
         (payment_id,)).fetchone()))

@@ -18,7 +18,7 @@
 | 事由/标的 | 事由 reason | 采购标的 title | 合同标的 title | 用印文件 | 出差事由+期间 | 借款事由 |
 | 交付物 | 发票（图片/PDF/验真） | 合同/PO/报价单 | 合同文件 PDF（全文 AI 审查） | 用印文件 | 差旅申请单（事前） | 借款事由+放款凭证 |
 
-**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 179 个测试全绿
+**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 245 个测试全绿
 
 PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异常检测、LLM 数据隔离等设计决策）
 
@@ -33,6 +33,7 @@ PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异�
 | 预算额度 | 员工申请 → 经理/老板批额度 → 额度内报销免逐单审批（审查不豁免）→ 自动核销扣减 |
 | 预算检查 | 部门/全司月度预算（Excel 批量导入），额度审批+报销提交双检查点 |
 | 全生命周期 | 发起→审批（会签/超时升级老板终裁）→ **打款确认才关闭**；撤回/作废/驳回重提 |
+| 审批意见 | 同意可附意见，自动附送下一级查阅；驳回意见回传提交人与链路其他审批人（全审批类型卡片输入，回放包明文留痕） |
 | 日报三版 | 公司版(老板)/部门版(经理，机密单只计数)/财务版(待付清单)，每天 18:00 自动推送 |
 | 异常检测 | 月度扫查：费用趋势（四层下钻+贡献归因）+ 单价偏离（双向），ALERT 即时推送 |
 | 商务模块 | 采购（复用审批流+独立矩阵）→ 合同登记+AI 法务审查（legal+boss 会签）→ 分期付款 → 到期提醒/一键续签 |
@@ -70,7 +71,7 @@ cd boss-secretary
 
 ```bash
 pip install -e .
-pytest        # 196 个测试，应全绿
+pytest        # 245 个测试，应全绿
 ```
 
 ### 2. 飞书自建应用（[open.feishu.cn](https://open.feishu.cn) → 开发者后台）
@@ -174,12 +175,17 @@ kill $(pgrep -f "boss_secretary.feishu|boss_secretary.watchdog")              # 
 | `core/compliance.py` | 规则引擎 R1-R7（纯函数可回放，阈值全可配） |
 | `core/router.py` | 状态机 + 会签 + 超时升级 + 打款终态 + 审计 |
 | `core/perm.py` | 角色×范围×密级（权限先于 LLM 上下文） |
+| `core/approvals.py` | 统一审批动作层（意见采集/记录/附送/回传，全审批类型共用） |
 | `core/extract.py` | AI 抽取（文本/图片/PDF）+ LLM 复核 + 交叉核验 |
 | `core/allowance.py` / `budget.py` | 额度授权核销 / 预算检查 + Excel 导入 |
 | `core/anomaly.py` | 月度异常扫查（趋势四层下钻 + 单价偏离） |
 | `core/travel.py` | 差旅事前申请 + 借款台账 |
 | `core/audit.py` | 内部审计：风险评分/抽检队列/回放包/风险名单 |
 | `core/specs.py` | 统一审核三要素契约（DocSpec） |
+| `core/db.py` / `core/status.py` | 数据访问共用件（时间戳/ID/行解码/字段更新）+ 状态常量唯一事实源 |
+| `core/cards.py` | 渠道无关卡片组件层（飞书 JSON 作为 IR，文本/Slack 同源渲染） |
+| `ingress/actions.py` / `commands.py` | 卡片动作注册表（16）/ 私聊命令注册表（22），ingress 分拆 |
+| `core/policy.py` / `core/notify.py` | 决策通知策略（谁收到什么）+ 通知出口（异常隔离/去重） |
 | `core/scheduler.py` | 定时任务（日报/月报/扫查/过期/超时/备份/逾期提醒） |
 | `core/channel.py` | 渠道抽象（Envelope 契约 + ChannelAdapter + 会话分发） |
 | `ingress/telegram.py` / `slack.py` / `wecom.py` | Telegram / Slack（Socket Mode）/ 企业微信 |
@@ -187,7 +193,7 @@ kill $(pgrep -f "boss_secretary.feishu|boss_secretary.watchdog")              # 
 | `ingress/feishu.py` | 长连接收单 + 卡片审批 + 事件桥 |
 | `core/llm.py` + `secrets.py` | OpenAI 兼容客户端（OpenRouter/vLLM/GLM）+ Keychain 密钥 |
 
-**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 179 个测试全绿
+**当前版本 [v1.0.0](https://github.com/627-hub/boss-secretary/releases)** · 245 个测试全绿
 
 PRD 全文：`docs/PRD-MVP.md`（责任矩阵语义、权限密级模型、异常检测方法、LLM 数据隔离等设计决策）。
 

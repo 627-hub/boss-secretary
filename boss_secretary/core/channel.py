@@ -50,20 +50,36 @@ class ChannelAdapter(ABC):
 
 
 def card_to_text(card: Mapping) -> str:
-    lines = []
+    lines: list[str] = []
+    actions: list[str] = []
     header = (card.get("header") or {}).get("title") or {}
     if header.get("content"):
         lines.append(str(header["content"]))
-    for el in card.get("elements") or []:
-        if el.get("tag") == "div":
+    _walk_elements(card.get("elements") or [], lines, actions)
+    if actions:
+        lines.append("可选操作: " + " / ".join(filter(None, actions)))
+    return "\n".join(lines)
+
+
+def _walk_elements(elements: Sequence[Mapping], lines: list[str],
+                   actions: list[str]) -> None:
+    for el in elements:
+        tag = el.get("tag")
+        if tag == "div":
             t = (el.get("text") or {}).get("content")
             if t:
                 lines.append(str(t))
-        elif el.get("tag") == "action":
-            acts = [a.get("text", {}).get("content", "") for a in el.get("actions") or []]
-            if acts:
-                lines.append("可选操作: " + " / ".join(filter(None, acts)))
-    return "\n".join(lines)
+        elif tag == "action":
+            actions.extend(a.get("text", {}).get("content", "")
+                           for a in el.get("actions") or [])
+        elif tag == "form":
+            for sub in el.get("elements") or []:
+                if sub.get("tag") == "input":
+                    ph = (sub.get("placeholder") or {}).get("content")
+                    if ph:
+                        lines.append(f"✍ {ph}")
+                elif sub.get("tag") == "button":
+                    actions.append(sub.get("text", {}).get("content", ""))
 
 
 class ConversationDispatcher:

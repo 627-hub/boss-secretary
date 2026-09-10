@@ -5,6 +5,7 @@ import yaml
 
 from boss_secretary.core import matrix as M
 from boss_secretary.core import compliance as C
+from boss_secretary.core import approvals as AP
 from boss_secretary.core import router as R
 
 TODAY = dt.date(2026, 9, 6)
@@ -211,3 +212,48 @@ def test_history_injected_into_rules(flow, matrix, store, employee):
     assert r2.verdict == C.FAIL
     assert o.next_status == R.SUBMITTED
     assert o.decision.hit_rule_id == "M07"
+
+
+def _big_router(flow, matrix, store):
+    rec = Recorder()
+    router = R.Router(flow, matrix, store, notifier=rec, today_fn=lambda: TODAY,
+                      role_resolvers={"manager": lambda t: "m1",
+                                      "boss": lambda t: "b1"})
+    return router, rec
+
+
+def test_approve_comment_recorded_and_next_level_notified(flow, matrix, store,
+                                                          employee):
+    router, rec = _big_router(flow, matrix, store)
+    tid = router.create_ticket({**GREEN, "amount": 6000}, employee)
+    o = router.run_review(tid, llm_verdict="WARN")
+    assert o.approver_roles == (R.MANAGER_ROLE, R.BOSS_ROLE)
+
+    st = router.approve(tid, "m1", R.MANAGER_ROLE, "金额属实")
+    assert st == R.SUBMITTED
+    events = [(e, to) for e, _, to in rec.events]
+    assert ("ticket.approval_progress", ("b1",)) in events
+    hist = AP.history(store.conn, "ticket", tid)
+    assert len(hist) == 1
+    assert hist[0]["role"] == R.MANAGER_ROLE
+    assert hist[0]["comment"] == "金额属实"
+
+    router.approve(tid, "b1", R.BOSS_ROLE, "同意")
+    assert store.get(tid)["status"] == R.APPROVED
+    hist = AP.history(store.conn, "ticket", tid)
+    assert [h["comment"] for h in hist] == ["金额属实", "同意"]
+
+
+def test_reject_comment_returned_to_chain_others(flow, matrix, store, employee):
+    router, rec = _big_router(flow, matrix, store)
+    tid = router.create_ticket({**GREEN, "amount": 6000}, employee)
+    router.run_review(tid, llm_verdict="WARN")
+    router.approve(tid, "m1", R.MANAGER_ROLE)
+    router.reject(tid, "b1", R.BOSS_ROLE, "事由不充分")
+
+    assert store.get(tid)["status"] == R.REJECTED
+    events = [(e, to) for e, _, to in rec.events]
+    assert ("ticket.rejected", ("m1",)) in events
+    hist = AP.history(store.conn, "ticket", tid)
+    assert hist[-1]["decision"] == AP.REJECT
+    assert hist[-1]["comment"] == "事由不充分"

@@ -9,32 +9,25 @@
 """
 from __future__ import annotations
 
-import datetime as dt
 import json
 import re
 import unicodedata
-import uuid
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
+
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
-REJECTED = "rejected"
-PENDING = "pending_review"
-REVIEWING = "reviewing"
-ACTIVE = "active"
-SUSPENDED = "suspended"
-BLACKLISTED = "blacklisted"
+REJECTED = ST.Doc.REJECTED
+PENDING = ST.Doc.PENDING_REVIEW      # 准入申请历史状态值
+REVIEWING = ST.Doc.REVIEWING
+ACTIVE = ST.Doc.ACTIVE
+SUSPENDED = ST.Doc.SUSPENDED
+BLACKLISTED = ST.Doc.BLACKLISTED
 
 SIGNED_ROLES = ("finance", "boss")
 HIGH_RISK_FIELDS = ("bank_name", "bank_account")
-
-
-def _now() -> str:
-    return dt.datetime.now().isoformat(timespec="seconds")
-
-
-def _id() -> str:
-    return f"S{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
 
 
 def normalize_name(name: str) -> str:
@@ -45,12 +38,9 @@ def normalize_name(name: str) -> str:
 
 
 def get(conn, supplier_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM suppliers WHERE supplier_id=?",
-                       (supplier_id,)).fetchone()
-    if row is None:
+    rec = DB.fetch_one(conn, "suppliers", "supplier_id", supplier_id)
+    if rec is None:
         return None
-    rec = dict(zip([c[0] for c in conn.execute(
-        "SELECT * FROM suppliers LIMIT 1").description], row))
     try:
         rec["approvers"] = json.loads(rec["approvers"]) if rec.get("approvers") else []
     except (TypeError, ValueError):
@@ -101,7 +91,7 @@ def create_request(conn, *, name: str, uscc: str | None = None,
     dup = find_by_name(conn, name)
     if dup and dup["status"] in (ACTIVE, PENDING, REVIEWING):
         raise ValueError(f"供应商「{name}」已存在（{dup['supplier_id']}，{dup['status']}）")
-    sid = _id()
+    sid = DB.new_id("S")
     conn.execute(
         "INSERT INTO suppliers(supplier_id, name, name_norm, uscc, contact,"
         " bank_name, bank_account, status, reason, created_by)"
@@ -112,7 +102,8 @@ def create_request(conn, *, name: str, uscc: str | None = None,
     return get(conn, sid)
 
 
-def approve(conn, supplier_id: str, actor_id: str, role: str) -> str:
+def approve(conn, supplier_id: str, actor_id: str, role: str,
+            comment: str = "") -> str:
     s = get(conn, supplier_id)
     if s is None:
         raise ValueError(f"供应商不存在: {supplier_id}")
@@ -121,29 +112,30 @@ def approve(conn, supplier_id: str, actor_id: str, role: str) -> str:
     approvals = s["approvers"] or []
     if not any(a.get("role") == role for a in approvals):
         approvals.append({"role": role, "user_id": actor_id})
-        conn.execute("UPDATE suppliers SET approvers=?, updated_at=?"
-                     " WHERE supplier_id=?",
-                     (json.dumps(approvals, ensure_ascii=False), _now(), supplier_id))
-        conn.commit()
+        DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                         approvers=json.dumps(approvals, ensure_ascii=False),
+                         updated_at=DB.now())
+        AP.record(conn, doc_type="supplier", doc_id=supplier_id, actor=actor_id,
+                  role=role, decision=AP.APPROVE, comment=comment)
     signed = {a["role"] for a in (get(conn, supplier_id)["approvers"] or [])}
     if set(SIGNED_ROLES) <= signed:
-        conn.execute("UPDATE suppliers SET status=?, updated_at=? WHERE supplier_id=?",
-                     (ACTIVE, _now(), supplier_id))
-        conn.commit()
+        DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                         status=ACTIVE, updated_at=DB.now())
         return ACTIVE
-    conn.execute("UPDATE suppliers SET status=?, updated_at=? WHERE supplier_id=?",
-                 (REVIEWING, _now(), supplier_id))
-    conn.commit()
+    DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                     status=REVIEWING, updated_at=DB.now())
     return REVIEWING
 
 
-def reject(conn, supplier_id: str, actor_id: str) -> None:
+def reject(conn, supplier_id: str, actor_id: str, role: str = "",
+           reason: str = "") -> None:
     s = get(conn, supplier_id)
     if s is None or s["status"] not in (PENDING, REVIEWING):
         raise ValueError("供应商不存在或状态不可驳回")
-    conn.execute("UPDATE suppliers SET status=?, updated_at=? WHERE supplier_id=?",
-                 ("rejected", _now(), supplier_id))
-    conn.commit()
+    AP.record(conn, doc_type="supplier", doc_id=supplier_id, actor=actor_id,
+              role=role, decision=AP.REJECT, comment=reason)
+    DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                     status=REJECTED, updated_at=DB.now())
 
 
 def update_field(conn, supplier_id: str, field: str, value: str,
@@ -156,13 +148,14 @@ def update_field(conn, supplier_id: str, field: str, value: str,
         raise ValueError(f"字段不可变更: {field}")
     old = s.get(field)
     _log_change(conn, supplier_id, field, old, value, changed_by)
-    conn.execute(f"UPDATE suppliers SET {field}=?, updated_at=? WHERE supplier_id=?",
-                 (value, _now(), supplier_id))
+    DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                     **{field: value, "updated_at": DB.now()}, commit=False)
     re_review = field in HIGH_RISK_FIELDS
     if re_review and s["status"] == ACTIVE:
-        conn.execute("UPDATE suppliers SET status=?, approvers='', updated_at=?"
-                     " WHERE supplier_id=?", (PENDING, _now(), supplier_id))
-    conn.commit()
+        DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                         status=PENDING, approvers="", updated_at=DB.now())
+    else:
+        conn.commit()
     return {"supplier_id": supplier_id, "field": field, "old": old, "new": value,
             "re_review": re_review}
 
@@ -171,9 +164,9 @@ def blacklist(conn, supplier_id: str, reason: str, actor_id: str) -> None:
     s = get(conn, supplier_id)
     if s is None:
         raise ValueError(f"供应商不存在: {supplier_id}")
-    conn.execute("UPDATE suppliers SET status=?, reason=?, updated_at=?"
-                 " WHERE supplier_id=?",
-                 (BLACKLISTED, f"{reason}（by {actor_id}）", _now(), supplier_id))
+    DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                     status=BLACKLISTED, reason=f"{reason}（by {actor_id}）",
+                     updated_at=DB.now())
     _log_change(conn, supplier_id, "status", s["status"], BLACKLISTED, actor_id)
     conn.commit()
 
@@ -182,8 +175,8 @@ def unblacklist(conn, supplier_id: str, actor_id: str) -> None:
     s = get(conn, supplier_id)
     if s is None or s["status"] != BLACKLISTED:
         raise ValueError("供应商不在黑名单")
-    conn.execute("UPDATE suppliers SET status=?, reason='移出黑名单', updated_at=?"
-                 " WHERE supplier_id=?", (ACTIVE, _now(), supplier_id))
+    DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
+                     status=ACTIVE, reason="移出黑名单", updated_at=DB.now())
     _log_change(conn, supplier_id, "status", BLACKLISTED, ACTIVE, actor_id)
     conn.commit()
 

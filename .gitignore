@@ -6,3 +6,4 @@ data/
 .DS_Store
 .env
 config/settings.yaml
+docs/HANDOVER.md

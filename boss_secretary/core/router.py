@@ -13,7 +13,6 @@ import hashlib
 import json
 import sqlite3
 import threading
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -22,18 +21,21 @@ import yaml
 
 from boss_secretary.core import compliance as C
 from boss_secretary.core import matrix as M
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
 from boss_secretary import models as MD
 
-DRAFT = "DRAFT"
-REVIEWING = "REVIEWING"
-AUTO_APPROVED = "AUTO_APPROVED"
-SUBMITTED = "SUBMITTED"
-APPROVED = "APPROVED"
-PAID = "PAID"
-REJECTED = "REJECTED"
-ESCALATED = "ESCALATED"
-WITHDRAWN = "WITHDRAWN"
-CANCELLED = "CANCELLED"
+DRAFT = ST.Ticket.DRAFT
+REVIEWING = ST.Ticket.REVIEWING
+AUTO_APPROVED = ST.Ticket.AUTO_APPROVED
+SUBMITTED = ST.Ticket.SUBMITTED
+APPROVED = ST.Ticket.APPROVED
+PAID = ST.Ticket.PAID
+REJECTED = ST.Ticket.REJECTED
+ESCALATED = ST.Ticket.ESCALATED
+WITHDRAWN = ST.Ticket.WITHDRAWN
+CANCELLED = ST.Ticket.CANCELLED
 
 MANAGER_ROLE = "manager"
 BOSS_ROLE = "boss"
@@ -219,24 +221,20 @@ class SQLiteTicketStore:
         return tid
 
     def get(self, ticket_id: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM tickets WHERE ticket_id=?",
-                                (ticket_id,)).fetchone()
-        if row is None:
+        rec = DB.fetch_one(self.conn, "tickets", "ticket_id", ticket_id)
+        if rec is None:
             return None
-        rec = dict(zip([c[0] for c in self.conn.execute(
-            "SELECT * FROM tickets LIMIT 1").description], row))
         for k in ("approvers", "approvals"):
             rec[k] = json.loads(rec[k]) if rec.get(k) else []
         return rec
 
     def update(self, ticket_id: str, **fields: Any) -> None:
+        enc = {k: (json.dumps(v, ensure_ascii=False)
+                   if k in ("approvers", "approvals") and not isinstance(v, str)
+                   else v)
+               for k, v in fields.items()}
         with self.lock:
-            for k, v in fields.items():
-                if k in ("approvers", "approvals") and not isinstance(v, str):
-                    v = json.dumps(v, ensure_ascii=False)
-                self.conn.execute(f"UPDATE tickets SET {k}=? WHERE ticket_id=?",
-                                  (v, ticket_id))
-            self.conn.commit()
+            DB.update_fields(self.conn, "tickets", "ticket_id", ticket_id, **enc)
 
     def list_by_status(self, *statuses: str) -> list[dict]:
         out = []
@@ -305,7 +303,7 @@ class Router:
 
     def create_ticket(self, ctx: Mapping[str, Any], employee: Mapping[str, Any],
                       type_override: str | None = None) -> str:
-        tid = f"T{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+        tid = DB.new_id("T")
         record = {
             "ticket_id": tid, "feishu_instance_id": ctx.get("feishu_instance_id"),
             "employee_id": employee["user_id"], "dept_id": employee.get("dept_id"),
@@ -355,7 +353,8 @@ class Router:
                      outcome.approver_roles)
         return outcome
 
-    def approve(self, ticket_id: str, actor_id: str, actor_role: str) -> str:
+    def approve(self, ticket_id: str, actor_id: str, actor_role: str,
+                comment: str = "") -> str:
         t = self.store.get(ticket_id)
         if t is None:
             raise RouterError(f"单据不存在: {ticket_id}")
@@ -367,6 +366,9 @@ class Router:
         if t["status"] == ESCALATED and actor_role == self.flow.escalate_to:
             self.store.update(ticket_id, approvals=[{"role": actor_role,
                                                      "user_id": actor_id}])
+            AP.record(self.store.conn, doc_type="ticket", doc_id=ticket_id,
+                      actor=actor_id, role=actor_role, decision=AP.APPROVE,
+                      comment=comment)
             self._transition(ticket_id, ESCALATED, APPROVED, actor_id, "超时升级老板终裁")
             self._notify("ticket.approved", self.store.get(ticket_id) or {}, ["finance"])
             return APPROVED
@@ -374,14 +376,18 @@ class Router:
         if not any(a.get("role") == actor_role for a in approvals):
             approvals.append({"role": actor_role, "user_id": actor_id})
             self.store.update(ticket_id, approvals=approvals)
-            self._audit(ticket_id, actor_id, "approve", role=actor_role)
+            AP.record(self.store.conn, doc_type="ticket", doc_id=ticket_id,
+                      actor=actor_id, role=actor_role, decision=AP.APPROVE,
+                      comment=comment)
+            self._audit(ticket_id, actor_id, "approve", role=actor_role,
+                        comment=comment)
         done_roles = {a["role"] for a in approvals}
         if set(roles) <= done_roles:
             self._transition(ticket_id, t["status"], APPROVED, actor_id, "会签完成")
             self._notify("ticket.approved", self.store.get(ticket_id) or {},
                          ["finance"])
             return APPROVED
-        self._notify("ticket.approval_progress", self.store.get(ticket_id) or [],
+        self._notify("ticket.approval_progress", self.store.get(ticket_id) or {},
                      [r for r in roles if r not in done_roles])
         return t["status"]
 
@@ -392,10 +398,15 @@ class Router:
             raise RouterError(f"单据不存在: {ticket_id}")
         if t["status"] not in (SUBMITTED, ESCALATED):
             raise TransitionError(f"状态 {t['status']} 不可驳回")
-        if actor_role not in (t.get("approvers") or []):
+        roles = list(t.get("approvers") or [])
+        if actor_role not in roles:
             raise PermissionError_(f"角色 {actor_role} 不在审批链中")
+        AP.record(self.store.conn, doc_type="ticket", doc_id=ticket_id,
+                  actor=actor_id, role=actor_role, decision=AP.REJECT,
+                  comment=reason)
         self._transition(ticket_id, t["status"], REJECTED, actor_id, reason)
-        self._notify("ticket.rejected", self.store.get(ticket_id) or {}, [])
+        others = [r for r in roles if r != actor_role]
+        self._notify("ticket.rejected", self.store.get(ticket_id) or {}, others)
 
     def withdraw(self, ticket_id: str, actor_id: str) -> None:
         t = self.store.get(ticket_id)

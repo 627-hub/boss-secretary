@@ -15,6 +15,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+
 COUNTED = ("APPROVED", "PAID", "AUTO_APPROVED", "SUBMITTED", "ESCALATED")
 
 DEFAULT_WEIGHTS = {
@@ -162,6 +165,15 @@ def replay_package(conn, ticket_id: str, audit_dir: str | Path = "data/audit"
               "| 时间 | 操作者 | 动作 | 载荷哈希 |", "|---|---|---|---|"]
     for ts, actor, action, ph, pf in logs:
         lines.append(f"| {ts} | {actor} | {action} | {(ph or '')[:12]} |")
+    decisions = AP.history(conn, "ticket", ticket_id)
+    if decisions:
+        lines += ["", "## 审批意见（approval_actions）", "",
+                  "| 时间 | 角色 | 决定 | 意见 |", "|---|---|---|---|"]
+        for d in decisions:
+            comment = (d.get("comment") or "").replace("|", "｜").replace("\n", " ")
+            lines.append(f"| {d.get('created_at')} | {AP.role_label(d.get('role'))} | "
+                         f"{AP.DECISION_LABELS.get(d.get('decision'), d.get('decision'))} | "
+                         f"{comment} |")
     lines += ["", "> 本回放包由 audit_log（append-only）生成，"
               "哈希链可用于完整性核验；不构成审计意见。"]
     out = Path(audit_dir) / "replays"
@@ -178,9 +190,7 @@ def set_anomaly_status(conn, anomaly_id: int, status: str) -> dict | None:
                        (anomaly_id,)).fetchone()
     if row is None:
         return None
-    conn.execute("UPDATE anomalies SET status=? WHERE anomaly_id=?",
-                 (status, anomaly_id))
-    conn.commit()
+    DB.update_fields(conn, "anomalies", "anomaly_id", anomaly_id, status=status)
     return {"anomaly_id": anomaly_id, "subject": row[0], "status": status}
 
 

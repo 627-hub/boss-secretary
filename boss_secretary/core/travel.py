@@ -8,28 +8,22 @@ open 借款超 60 天 → 月度提醒。
 from __future__ import annotations
 
 import datetime as dt
-import uuid
-from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
-TRIP_PENDING = "pending"
-TRIP_ACTIVE = "active"
-TRIP_REJECTED = "rejected"
-TRIP_CLOSED = "closed"
+from boss_secretary.core import approvals as AP
+from boss_secretary.core import db as DB
+from boss_secretary.core import status as ST
 
-LOAN_PENDING = "pending"
-LOAN_PAID_OUT = "paid_out"
-LOAN_OPEN = "open"
-LOAN_CLOSED = "closed"
-LOAN_REJECTED = "rejected"
+TRIP_PENDING = ST.Doc.PENDING
+TRIP_ACTIVE = ST.Doc.ACTIVE
+TRIP_REJECTED = ST.Doc.REJECTED
+TRIP_CLOSED = ST.Doc.CLOSED
 
-
-def _now() -> str:
-    return dt.datetime.now().isoformat(timespec="seconds")
-
-
-def _id(prefix: str) -> str:
-    return f"{prefix}{dt.date.today():%Y%m%d}-{uuid.uuid4().hex[:6].upper()}"
+LOAN_PENDING = ST.Doc.PENDING
+LOAN_PAID_OUT = ST.Doc.PAID_OUT
+LOAN_OPEN = ST.Doc.OPEN
+LOAN_CLOSED = ST.Doc.CLOSED
+LOAN_REJECTED = ST.Doc.REJECTED
 
 
 # ── 差旅事前申请 ──────────────────────────────────────────────
@@ -37,7 +31,7 @@ def _id(prefix: str) -> str:
 def trip_request(conn, *, employee_id: str, dept_id: str | None, destination: str,
                  reason: str, estimate: float, start_date: str,
                  end_date: str) -> dict:
-    tid = _id("TR")
+    tid = DB.new_id("TR")
     conn.execute(
         "INSERT INTO trips(trip_id, employee_id, dept_id, destination, reason,"
         " estimate, start_date, end_date) VALUES(?,?,?,?,?,?,?,?)",
@@ -48,21 +42,19 @@ def trip_request(conn, *, employee_id: str, dept_id: str | None, destination: st
 
 
 def get_trip(conn, trip_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM trips WHERE trip_id=?", (trip_id,)).fetchone()
-    if row is None:
-        return None
-    return dict(zip([c[0] for c in conn.execute("SELECT * FROM trips LIMIT 1")
-                     .description], row))
+    return DB.fetch_one(conn, "trips", "trip_id", trip_id)
 
 
-def decide_trip(conn, trip_id: str, approver: str, approve: bool) -> dict | None:
+def decide_trip(conn, trip_id: str, approver: str, approve: bool,
+                note: str = "", role: str = "manager") -> dict | None:
     t = get_trip(conn, trip_id)
     if t is None or t["status"] != TRIP_PENDING:
         return None
     new = TRIP_ACTIVE if approve else TRIP_REJECTED
-    conn.execute("UPDATE trips SET status=?, approver=? WHERE trip_id=?",
-                 (new, approver, trip_id))
-    conn.commit()
+    AP.record(conn, doc_type="trip", doc_id=trip_id, actor=approver, role=role,
+              decision=AP.APPROVE if approve else AP.REJECT, comment=note)
+    DB.update_fields(conn, "trips", "trip_id", trip_id,
+                     status=new, approver=approver)
     return get_trip(conn, trip_id)
 
 
@@ -104,7 +96,7 @@ def trip_table(rows: Sequence[Mapping]) -> str:
 
 def loan_request(conn, *, employee_id: str, amount: float, reason: str = "",
                  approver: str | None = None) -> dict:
-    lid = _id("L")
+    lid = DB.new_id("L")
     conn.execute(
         "INSERT INTO loans(loan_id, employee_id, amount, reason, approver)"
         " VALUES(?,?,?,?,?)",
@@ -114,29 +106,26 @@ def loan_request(conn, *, employee_id: str, amount: float, reason: str = "",
 
 
 def get_loan(conn, loan_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM loans WHERE loan_id=?", (loan_id,)).fetchone()
-    if row is None:
-        return None
-    return dict(zip([c[0] for c in conn.execute("SELECT * FROM loans LIMIT 1")
-                     .description], row))
+    return DB.fetch_one(conn, "loans", "loan_id", loan_id)
 
 
 def remaining(loan: Mapping) -> float:
     return max(0.0, float(loan["amount"]) - float(loan.get("repaid_amount") or 0))
 
 
-def loan_decide(conn, loan_id: str, approver: str, approve: bool) -> dict | None:
+def loan_decide(conn, loan_id: str, approver: str, approve: bool,
+                note: str = "") -> dict | None:
     l = get_loan(conn, loan_id)
     if l is None or l["status"] != LOAN_PENDING:
         return None
+    AP.record(conn, doc_type="loan", doc_id=loan_id, actor=approver, role="boss",
+              decision=AP.APPROVE if approve else AP.REJECT, comment=note)
     if not approve:
-        conn.execute("UPDATE loans SET status=? WHERE loan_id=?",
-                     (LOAN_REJECTED, loan_id))
-        conn.commit()
+        DB.update_fields(conn, "loans", "loan_id", loan_id,
+                         status=LOAN_REJECTED)
         return get_loan(conn, loan_id)
-    conn.execute("UPDATE loans SET status=?, approver=? WHERE loan_id=?",
-                 (LOAN_PAID_OUT, approver, loan_id))
-    conn.commit()
+    DB.update_fields(conn, "loans", "loan_id", loan_id,
+                     status=LOAN_PAID_OUT, approver=approver)
     return get_loan(conn, loan_id)  # PAID_OUT = 已放款，进入 open 台账
 
 
@@ -147,9 +136,8 @@ def loan_offset(conn, loan_id: str, amount: float, by: str = "") -> float:
         raise ValueError(f"借款 {loan_id} 状态 {l['status'] if l else '缺失'} 不可核销")
     new_repaid = min(float(l["amount"]), float(l.get("repaid_amount") or 0) + amount)
     status = LOAN_CLOSED if new_repaid >= float(l["amount"]) else LOAN_OPEN
-    conn.execute("UPDATE loans SET repaid_amount=?, status=? WHERE loan_id=?",
-                 (new_repaid, status, loan_id))
-    conn.commit()
+    DB.update_fields(conn, "loans", "loan_id", loan_id,
+                     repaid_amount=new_repaid, status=status)
     return max(0.0, float(l["amount"]) - new_repaid)
 
 

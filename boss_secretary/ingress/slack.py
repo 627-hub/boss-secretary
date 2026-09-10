@@ -32,27 +32,45 @@ from boss_secretary.core.channel import (ChannelAdapter, ConversationDispatcher,
                                          Envelope, Attachment)
 
 
+def _button(a: Mapping) -> dict:
+    return {"type": "button",
+            "text": {"type": "plain_text",
+                     "text": (a.get("text") or {}).get("content", "")},
+            "value": json.dumps(a.get("value") or {}, ensure_ascii=False)}
+
+
 def card_to_blocks(card: Mapping) -> list[dict]:
-    """lark 风格卡片 → Block Kit blocks（按钮 value 编 JSON 供回调解析）。"""
+    """lark 风格卡片 → Block Kit blocks（按钮 value 编 JSON 供回调解析）。
+
+    飞书表单（form）里的按钮直接取出转 Block Kit；输入框降级为提示文本
+    （Slack 无表单输入，意见仅飞书卡片可填）。
+    """
     blocks: list[dict] = []
     title = (card.get("header") or {}).get("title", {}).get("content")
     if title:
         blocks.append({"type": "header",
                        "text": {"type": "plain_text", "text": title}})
     for el in card.get("elements") or []:
-        if el.get("tag") == "div":
+        tag = el.get("tag")
+        if tag == "div":
             t = (el.get("text") or {}).get("content")
             if t:
                 blocks.append({"type": "section",
                                "text": {"type": "mrkdwn", "text": t[:3000]}})
-        elif el.get("tag") == "action":
+        elif tag == "action":
+            btns = [_button(a) for a in el.get("actions") or []]
+            if btns:
+                blocks.append({"type": "actions", "elements": btns})
+        elif tag == "form":
             btns = []
-            for a in el.get("actions") or []:
-                label = (a.get("text") or {}).get("content", "")
-                btns.append({"type": "button", "text": {"type": "plain_text",
-                                                        "text": label},
-                             "value": json.dumps(a.get("value") or {},
-                                                 ensure_ascii=False)})
+            for sub in el.get("elements") or []:
+                if sub.get("tag") == "input":
+                    ph = (sub.get("placeholder") or {}).get("content")
+                    if ph:
+                        blocks.append({"type": "context", "elements": [
+                            {"type": "mrkdwn", "text": f"✍ {ph}"}]})
+                elif sub.get("tag") == "button":
+                    btns.append(_button(sub))
             if btns:
                 blocks.append({"type": "actions", "elements": btns})
     return blocks
