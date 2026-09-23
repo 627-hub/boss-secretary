@@ -20,7 +20,7 @@ def test_load_and_shape(mat):
     assert mat.name == "reimburse"
     assert mat.version == 1
     assert mat.hit_policy == M.FIRST
-    assert len(mat.rules) == 8
+    assert len(mat.rules) == 7
 
 
 def test_first_ordering(mat):

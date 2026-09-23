@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import re
 import threading
 import time
@@ -68,7 +69,8 @@ class WeComAdapter(ChannelAdapter):
         root = ET.fromstring(body.decode())
         enc = root.findtext("Encrypt") or ""
         ts = timestamp or str(int(time.time()))
-        if WC.signature(self.cfg["token"], ts, nonce, enc) != msg_signature:
+        if not hmac.compare_digest(
+                WC.signature(self.cfg["token"], ts, nonce, enc), msg_signature):
             raise WC.WeComCryptoError("消息签名不匹配")
         xml = WC.decrypt_msg(enc, self.aes_key, self.cfg["corp_id"])
         return xml, WC.parse_xml(xml)

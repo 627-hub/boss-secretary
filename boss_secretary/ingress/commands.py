@@ -199,21 +199,19 @@ def seal(bot, open_id: str, text: str) -> str:
         rows = SL.list_requests(bot.store.conn,
                                 applicant=None if is_priv else open_id)
         return SL.to_table(rows)
-    if text.startswith("用印") and "已用" in text:
-        m = SEAL_ID_RE.search(text)
-        if not m:
-            return "用法：用印 Y20260907-XXXXXX 已用"
+    seal_m = SEAL_ID_RE.search(text) if text.startswith("用印") else None
+    if seal_m and "已用" in text:
         try:
-            r = SL.get_request(bot.store.conn, m.group(0))
+            r = SL.get_request(bot.store.conn, seal_m.group(0))
             seal_name = r and r["seal_name"]
             role = SL.approver_role_for(seal_name or "")
             if open_id not in (bot.roles.get(role), bot.roles.get("boss"),
                                r["applicant"]):
                 return "仅审批人/保管人/申请人可确认用印完成"
-            SL.mark_used(bot.store.conn, m.group(0), open_id)
+            SL.mark_used(bot.store.conn, seal_m.group(0), open_id)
         except ValueError as e:
             return f"确认失败: {e}"
-        return f"✅ {m.group(0)} 已确认用印，台账留痕"
+        return f"✅ {seal_m.group(0)} 已确认用印，台账留痕"
     if text.startswith("用印"):
         # 用印申请 公章 XX销售合同 2份 关联C-xxx
         m = re.match(r"用印(?:申请)?\s*(\S+)\s+(\S+?)(?:\s*(\d+)份)?"
