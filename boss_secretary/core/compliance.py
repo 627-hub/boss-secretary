@@ -239,7 +239,14 @@ def run_rules(ctx: Mapping[str, Any],
 
 def summarize(results: Sequence[RuleResult]) -> dict:
     verdicts = [r.verdict for r in results]
-    overall = FAIL if FAIL in verdicts else WARN if WARN in verdicts else PASS
+    if not verdicts or all(v == SKIP for v in verdicts):
+        overall = SKIP
+    elif FAIL in verdicts:
+        overall = FAIL
+    elif WARN in verdicts:
+        overall = WARN
+    else:
+        overall = PASS
     return {"overall": overall,
             "fail": [r.rule_id for r in results if r.verdict == FAIL],
             "warn": [r.rule_id for r in results if r.verdict == WARN],

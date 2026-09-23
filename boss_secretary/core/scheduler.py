@@ -79,6 +79,7 @@ class Scheduler:
                 ran.append(f"{job.name}: {msg[:80]}")
             except Exception as e:
                 ran.append(f"{job.name}: ERROR {type(e).__name__}: {e}")
+                continue
             job.last_key = self._key(job, now)
             self._save()
         return ran

@@ -24,7 +24,7 @@ FIRST = "FIRST"
 UNIQUE = "UNIQUE"
 FALLBACK_ACTION = "MANUAL_REVIEW"
 
-_COND_TRANS = str.maketrans({"≤": "<=", "≥": ">=", "≦": "<", "≧": ">",
+_COND_TRANS = str.maketrans({"≤": "<=", "≥": ">=", "≦": "<=", "≧": ">=",
                              "＝": "==", "－": "-"})
 
 

@@ -326,33 +326,35 @@ def commit(xlsx_path: str | Path, db_path: str | Path, operator: str = "unknown"
     yaml_text = yaml.safe_dump(xlsx_to_matrix_dict(px), allow_unicode=True, sort_keys=False)
 
     conn = MD.init_db(db_path)
-    prev = conn.execute(
-        "SELECT version, compiled_yaml FROM matrix_versions"
-        " WHERE matrix_name=? AND status='active' ORDER BY version DESC LIMIT 1",
-        (name,)).fetchone()
-    if prev and version <= prev[0]:
-        raise M.MatrixLintError(
-            f"版本必须递增：当前 active v{prev[0]}，导入 v{version}（请在 Sheet3_变更记录 升版本）")
-    conn.execute("UPDATE matrix_versions SET status='retired'"
-                 " WHERE matrix_name=? AND status='active'", (name,))
-    conn.execute(
-        "INSERT INTO matrix_versions(matrix_name, version, source_xlsx, checksum,"
-        " compiled_yaml, hit_policy, status, created_by)"
-        " VALUES(?,?,?,?,?,?,'active',?)",
-        (name, version, str(src), checksum, yaml_text, m.hit_policy, operator))
+    try:
+        prev = conn.execute(
+            "SELECT version, compiled_yaml FROM matrix_versions"
+            " WHERE matrix_name=? AND status='active' ORDER BY version DESC LIMIT 1",
+            (name,)).fetchone()
+        if prev and version <= prev[0]:
+            raise M.MatrixLintError(
+                f"版本必须递增：当前 active v{prev[0]}，导入 v{version}（请在 Sheet3_变更记录 升版本）")
+        conn.execute("UPDATE matrix_versions SET status='retired'"
+                     " WHERE matrix_name=? AND status='active'", (name,))
+        conn.execute(
+            "INSERT INTO matrix_versions(matrix_name, version, source_xlsx, checksum,"
+            " compiled_yaml, hit_policy, status, created_by)"
+            " VALUES(?,?,?,?,?,?,'active',?)",
+            (name, version, str(src), checksum, yaml_text, m.hit_policy, operator))
 
-    diff = ""
-    if prev:
-        diff = "".join(difflib.unified_diff(
-            (prev[1] or "").splitlines(True), yaml_text.splitlines(True),
-            fromfile=f"{name} v{prev[0]}", tofile=f"{name} v{version}"))
-    adir = Path(audit_dir)
-    adir.mkdir(parents=True, exist_ok=True)
-    diff_file = adir / f"matrix_{name}_v{version}.diff"
-    diff_file.write_text(diff or "(无上一版本，首次激活)", encoding="utf-8")
-    MD.append_audit(conn, ticket_id=None, actor=operator, action="matrix.import",
-                    payload_hash=hashlib.sha256(diff_file.read_bytes()).hexdigest(),
-                    payload_file=str(diff_file))
-    conn.commit()
-    conn.close()
-    return version
+        diff = ""
+        if prev:
+            diff = "".join(difflib.unified_diff(
+                (prev[1] or "").splitlines(True), yaml_text.splitlines(True),
+                fromfile=f"{name} v{prev[0]}", tofile=f"{name} v{version}"))
+        adir = Path(audit_dir)
+        adir.mkdir(parents=True, exist_ok=True)
+        diff_file = adir / f"matrix_{name}_v{version}.diff"
+        diff_file.write_text(diff or "(无上一版本，首次激活)", encoding="utf-8")
+        MD.append_audit(conn, ticket_id=None, actor=operator, action="matrix.import",
+                        payload_hash=hashlib.sha256(diff_file.read_bytes()).hexdigest(),
+                        payload_file=str(diff_file))
+        conn.commit()
+        return version
+    finally:
+        conn.close()

@@ -67,7 +67,7 @@ TRANSITIONS: dict[str, set[str]] = {
     DRAFT: {REVIEWING, WITHDRAWN},
     REVIEWING: {AUTO_APPROVED, SUBMITTED, REJECTED, DRAFT},
     AUTO_APPROVED: {PAID, CANCELLED},
-    SUBMITTED: {APPROVED, REJECTED, ESCALATED, CANCELLED, WITHDRAWN},
+    SUBMITTED: {APPROVED, REJECTED, ESCALATED, CANCELLED, WITHDRAWN, AUTO_APPROVED},
     ESCALATED: {APPROVED, REJECTED, CANCELLED},
     APPROVED: {PAID, CANCELLED},
     REJECTED: {CANCELLED},
@@ -327,7 +327,8 @@ class Router:
             raise RouterError(f"单据不存在: {ticket_id}")
         if t["status"] not in (DRAFT, REVIEWING):
             raise TransitionError(f"状态 {t['status']} 不可审查")
-        self._transition(ticket_id, t["status"], REVIEWING, "system", "开始审查")
+        if t["status"] == DRAFT:
+            self._transition(ticket_id, DRAFT, REVIEWING, "system", "开始审查")
         ctx_file = (t.get("ai_evidence") or "").split("|")[0]
         ctx = json.loads(Path(ctx_file).read_text(encoding="utf-8")) if ctx_file else {}
         if llm_verdict:
@@ -469,10 +470,7 @@ class Router:
             raise TransitionError(f"状态 {t['status']} 不可核销")
         if t["status"] == DRAFT:
             self._transition(ticket_id, DRAFT, REVIEWING, "system", "额度核销审查")
-        elif t["status"] == SUBMITTED:
-            pass
-        else:
-            self._transition(ticket_id, t["status"], REVIEWING, "system", "额度核销审查")
+        # REVIEWING / SUBMITTED：已处于可核销状态，直接进入核销终态
         self.store.update(ticket_id, allowance_id=allowance_id,
                           ai_verdict="ALLOWANCE",
                           approvals=[{"role": "allowance", "user_id": allowance_id}])

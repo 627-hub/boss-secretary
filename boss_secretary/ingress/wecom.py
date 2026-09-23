@@ -63,13 +63,12 @@ class WeComAdapter(ChannelAdapter):
                              self.cfg["corp_id"], msg_signature, timestamp,
                              nonce, echostr)
 
-    def decrypt_push(self, body: bytes) -> tuple[str, dict]:
+    def decrypt_push(self, body: bytes, msg_signature: str, timestamp: str,
+                     nonce: str) -> tuple[str, dict]:
         root = ET.fromstring(body.decode())
         enc = root.findtext("Encrypt") or ""
-        sig = root.findtext("MsgSignature") or ""
-        ts = root.findtext("CreateTime") or str(int(time.time()))
-        nonce = root.findtext("Nonce") or ""
-        if WC.signature(self.cfg["token"], ts, nonce, enc) != sig:
+        ts = timestamp or str(int(time.time()))
+        if WC.signature(self.cfg["token"], ts, nonce, enc) != msg_signature:
             raise WC.WeComCryptoError("消息签名不匹配")
         xml = WC.decrypt_msg(enc, self.aes_key, self.cfg["corp_id"])
         return xml, WC.parse_xml(xml)
@@ -183,15 +182,16 @@ class WecomCallbackHandler(BaseHTTPRequestHandler):
             q = self._query()
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
-            xml, msg = self.adapter.decrypt_push(body)
+            xml, msg = self.adapter.decrypt_push(
+                body, q.get("msg_signature", ""), q.get("timestamp", ""),
+                q.get("nonce", ""))
             print(f"[wecom] 收到消息 sender={msg.get('FromUserName')} "
                   f"type={msg.get('MsgType')}")
             for env, _msg in self.adapter.to_envelopes(xml, msg):
                 if env.attachment is not None and env.attachment.data == b"":
                     def _fetch(env=env, msg=msg):
-                        att = msg.get("image") or msg.get("file") or {}
                         data = self.adapter.download_media(
-                            {"media_id": att.get("media_id")})
+                            {"media_id": msg.get("MediaId")})
                         if data is None:
                             self.adapter.send_text(env.actor, "媒体下载失败，请重发")
                             return

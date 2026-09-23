@@ -215,8 +215,10 @@ def render_markdown(data: Mapping, images: Sequence[Path]) -> str:
                          f"（{a['status']}）")
     try:
         from boss_secretary.core import audit as AU
-        appendix = AU.audit_appendix(conn, month) if hasattr(data.get("_conn"), "execute") else ""
-    except Exception:
+        appendix = (AU.audit_appendix(data["_conn"], data["month"])
+                    if hasattr(data.get("_conn"), "execute") else "")
+    except Exception as e:
+        print(f"[monthly] 审计附录生成失败: {type(e).__name__}: {e}")
         appendix = ""
     if appendix:
         lines += ["", appendix]
@@ -256,14 +258,15 @@ def export_docx(data: Mapping, images: Sequence[Path], out: Path) -> Path:
                               f"{str(a['evidence'])[:80]}")
     try:
         from boss_secretary.core import audit as AU
-        appendix = AU.audit_appendix(conn, data["month"])
+        appendix = (AU.audit_appendix(data["_conn"], data["month"])
+                    if hasattr(data.get("_conn"), "execute") else "")
         if appendix:
             doc.add_heading("审计附录 · 异常事件", level=1)
             for line in appendix.split("\n")[2:]:
                 if line.startswith("- "):
                     doc.add_paragraph(line[2:])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[monthly] 审计附录生成失败: {type(e).__name__}: {e}")
     doc.add_paragraph("口径说明：单据状态为当前快照；金额统计排除驳回/撤回/作废。"
                       "本报告仅供内部管理参考，不构成审计意见。")
     out = Path(out)

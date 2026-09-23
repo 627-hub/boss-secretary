@@ -199,6 +199,21 @@ def seal(bot, open_id: str, text: str) -> str:
         rows = SL.list_requests(bot.store.conn,
                                 applicant=None if is_priv else open_id)
         return SL.to_table(rows)
+    if text.startswith("用印") and "已用" in text:
+        m = SEAL_ID_RE.search(text)
+        if not m:
+            return "用法：用印 Y20260907-XXXXXX 已用"
+        try:
+            r = SL.get_request(bot.store.conn, m.group(0))
+            seal_name = r and r["seal_name"]
+            role = SL.approver_role_for(seal_name or "")
+            if open_id not in (bot.roles.get(role), bot.roles.get("boss"),
+                               r["applicant"]):
+                return "仅审批人/保管人/申请人可确认用印完成"
+            SL.mark_used(bot.store.conn, m.group(0), open_id)
+        except ValueError as e:
+            return f"确认失败: {e}"
+        return f"✅ {m.group(0)} 已确认用印，台账留痕"
     if text.startswith("用印"):
         # 用印申请 公章 XX销售合同 2份 关联C-xxx
         m = re.match(r"用印(?:申请)?\s*(\S+)\s+(\S+?)(?:\s*(\d+)份)?"
@@ -234,21 +249,6 @@ def seal(bot, open_id: str, text: str) -> str:
                 int(m.group(3) or 1), open_id))
         return (f"用印申请 {r['request_id']} 已提交（{seal_obj['name']}，"
                 f"{m.group(2)} ×{int(m.group(3) or 1)}），等待 {role} 审批")
-    if text.startswith("用印 ") and "已用" in text:
-        m = SEAL_ID_RE.search(text)
-        if not m:
-            return "用法：用印 Y20260907-XXXXXX 已用"
-        try:
-            r = SL.get_request(bot.store.conn, m.group(0))
-            seal_name = r and r["seal_name"]
-            role = SL.approver_role_for(seal_name or "")
-            if open_id not in (bot.roles.get(role), bot.roles.get("boss"),
-                               r["applicant"]):
-                return "仅审批人/保管人/申请人可确认用印完成"
-            SL.mark_used(bot.store.conn, m.group(0), open_id)
-        except ValueError as e:
-            return f"确认失败: {e}"
-        return f"✅ {m.group(0)} 已确认用印，台账留痕"
     return ("用印命令：用印申请 印章名 文件名 [N份] [关联C-xxx] | "
             "用印 Y-xxx 已用 | 用印台账 | 建章 印章名（老板）")
 
@@ -315,7 +315,9 @@ def withdraw(bot, open_id: str, text: str) -> str:
 @command("打款", lambda t: bool(TICKET_ID_RE.search(t)) and "打款" in t)
 def mark_paid(bot, open_id: str, text: str) -> str:
     tid = TICKET_ID_RE.search(text).group(0)
-    if bot.roles.get("finance") and open_id != bot.roles["finance"]:
+    if not bot.roles.get("finance"):
+        return "财务角色未配置，无法确认打款"
+    if open_id != bot.roles["finance"]:
         return "仅财务可确认打款"
     try:
         bot.router.mark_paid(tid, open_id, "finance")

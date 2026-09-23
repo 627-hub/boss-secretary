@@ -145,8 +145,9 @@ def overdue_loans(conn, days: int = 60, now: dt.datetime | None = None) -> list[
     now = now or dt.datetime.now()
     out = []
     cutoff = (now - dt.timedelta(days=days)).isoformat()
-    for lid, in conn.execute("SELECT loan_id FROM loans WHERE status=?"
-                             " AND created_at < ?", (LOAN_PAID_OUT, cutoff)).fetchall():
+    for lid, in conn.execute("SELECT loan_id FROM loans WHERE status IN (?,?)"
+                             " AND created_at < ?",
+                             (LOAN_PAID_OUT, LOAN_OPEN, cutoff)).fetchall():
         l = get_loan(conn, lid)
         if l and remaining(l) > 0:
             out.append({**l, "overdue_days": (now - dt.datetime.fromisoformat(

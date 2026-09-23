@@ -63,7 +63,7 @@ def test_render_department_filters_and_hides_confidential():
 
 def test_render_finance_pending_only_sorted():
     out = D.render_finance(D.aggregate(sample_tickets(), DAY, now=NOW))
-    assert "共 1 笔，合计 500 元" in out and "T4" in out
+    assert "共 2 笔，合计 580 元" in out and "T4" in out and "T5" in out
     assert "T1" not in out and "T2" not in out
     big = [mk("T9", "e9", "D1", R.APPROVED, 9000), mk("T4", "e3", "D1", R.APPROVED, 500)]
     out2 = D.render_finance(D.aggregate(big, DAY, now=NOW))

@@ -30,6 +30,7 @@ from typing import Any, Mapping, Sequence
 
 from boss_secretary.core.channel import (ChannelAdapter, ConversationDispatcher,
                                          Envelope, Attachment)
+from boss_secretary.core.llm import load_settings
 
 
 def _button(a: Mapping) -> dict:
@@ -119,13 +120,19 @@ class SlackAdapter(ChannelAdapter):
             if not actions:
                 return
             user = (payload.get("user") or {}).get("id", "")
-            try:
-                value = json.loads((actions[0] or {}).get("value") or "{}")
-            except ValueError:
-                value = {}
-            threading.Thread(
-                target=lambda: self.bot.on_card_action(user, value),
-                daemon=True).start()
+            for act in actions:
+                try:
+                    value = json.loads((act or {}).get("value") or "{}")
+                except ValueError:
+                    continue
+
+                def _run(v=value):
+                    try:
+                        self.bot.on_card_action(user, v)
+                    except Exception:  # noqa: BLE001 - 后台线程需兜底并记录
+                        import traceback
+                        traceback.print_exc()
+                threading.Thread(target=_run, daemon=True).start()
 
     # ── 事件 → Envelope ──────────────────────────────────────
     def event_to_envelopes(self, event: Mapping) -> list[Envelope]:

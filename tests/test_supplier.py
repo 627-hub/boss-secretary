@@ -66,7 +66,8 @@ def test_blacklist_gate_states(conn):
     r = S.check_name(conn, "黑名单测试公司")
     assert r["level"] == "FAIL" and "黑名单" in r["detail"]
     S.unblacklist(conn, s["supplier_id"], "audit1")
-    assert S.check_name(conn, "黑名单测试公司")["level"] == "PASS"
+    assert S.get(conn, s["supplier_id"])["status"] == S.PENDING
+    assert S.check_name(conn, "黑名单测试公司")["level"] == "WARN"
     with pytest.raises(ValueError):
         S.unblacklist(conn, s["supplier_id"], "audit1")
 

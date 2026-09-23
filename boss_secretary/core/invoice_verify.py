@@ -35,13 +35,16 @@ def structural_check(inv: Mapping[str, Any]) -> list[dict]:
         issues.append({"level": PASS, "rule": "数电票号码", "detail": f"{no}（20 位，全数字）"})
     elif OLD_NO.match(no):
         if code and OLD_CODE.match(code):
-            m = re.match(r"^\d{2}", code[0:6][4:6]) if False else None
-            yy = code[4:6] if len(code) == 10 else code[4:6]
+            yy = code[5:7] if len(code) == 12 else code[4:6]
             try:
                 year = int("20" + yy) if len(code) >= 6 else None
             except ValueError:
                 year = None
-            if year and date[:4] and int(date[:4]) != year:
+            try:
+                inv_year = int(date[:4]) if date[:4] else None
+            except ValueError:
+                inv_year = None
+            if year and inv_year and inv_year != year:
                 issues.append({"level": FAIL,
                                "rule": "代码年份↔开票日期不一致",
                                "detail": f"代码年份 {year} vs 发票日期 {date[:4]}"})
@@ -55,7 +58,8 @@ def structural_check(inv: Mapping[str, Any]) -> list[dict]:
         issues.append({"level": FAIL, "rule": "号码结构异常",
                        "detail": f"{no} 既非数电票(20位)也非旧版(8位)"})
 
-    if amount is None or float(amount) <= 0:
+    amt = _f(amount)
+    if amt is None or amt <= 0:
         issues.append({"level": WARN, "rule": "金额缺失/非正", "detail": str(amount)})
     if not seller:
         issues.append({"level": WARN, "rule": "开票方缺失",
@@ -160,7 +164,10 @@ def cross_check_qr(inv: Mapping[str, Any], qr: Mapping[str, Any]) -> list[dict]:
         if qv in (None, "") or ov in (None, ""):
             continue
         if key == "amount":
-            if abs(float(qv) - float(ov)) > 0.01:
+            qa, oa = _f(qv), _f(ov)
+            if qa is None or oa is None:
+                continue
+            if abs(qa - oa) > 0.01:
                 issues.append({"level": FAIL, "rule": f"二维码↔识别 {label}不一致",
                                "detail": f"QR {qv} vs 识别 {ov}"})
         elif str(qv) != str(ov):

@@ -116,14 +116,15 @@ def renew(conn, old_id: str, new_end_date: str, amount: float | None = None,
         raise ValueError(f"合同不存在: {old_id}")
     if old["status"] not in (ACTIVE, EXPIRING):
         raise ValueError(f"状态 {old['status']} 不可续签")
+    new_id = create(conn, employee_id=old["employee_id"], dept_id=old["dept_id"],
+                    title=old["title"], supplier=old["supplier"],
+                    amount=amount if amount is not None else old["amount"],
+                    start_date=dt.date.today().isoformat(), end_date=new_end_date,
+                    payment_terms=old["payment_terms"], procurement_id=old["procurement_id"],
+                    ai_review=None, evidence_file=None)
     DB.update_fields(conn, "contracts", "contract_id", old_id,
                      status=RENEWED, updated_at=DB.now())
-    return create(conn, employee_id=old["employee_id"], dept_id=old["dept_id"],
-                  title=old["title"], supplier=old["supplier"],
-                  amount=amount if amount is not None else old["amount"],
-                  start_date=dt.date.today().isoformat(), end_date=new_end_date,
-                  payment_terms=old["payment_terms"], procurement_id=old["procurement_id"],
-                  ai_review=None, evidence_file=None)
+    return new_id
 
 
 def close(conn, contract_id: str, reason: str = "到期关闭") -> None:
@@ -196,7 +197,7 @@ def expiring(conn, days: int = 30, now: dt.date | None = None) -> list[dict]:
         except ValueError:
             continue
         left = (end - now).days
-        if 0 <= left <= days:
+        if left <= days:
             out.append({**c, "days_left": left})
     return out
 

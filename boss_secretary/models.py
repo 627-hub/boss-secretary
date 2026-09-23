@@ -283,8 +283,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
             continue
         try:
             conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass  # 无版本号的老库可能已手工加过该列
+        except sqlite3.OperationalError as err:
+            if "duplicate column name" not in str(err).lower():
+                raise  # 其余失败必须暴露，否则 schema 与 user_version 不一致
+            # 无版本号的老库可能已手工加过该列
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

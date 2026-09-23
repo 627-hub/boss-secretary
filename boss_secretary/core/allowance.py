@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+from pathlib import Path
 from typing import Mapping, Sequence
 
 import yaml
@@ -81,7 +82,7 @@ def decide(conn, allowance_id: str, actor_id: str, approve: bool,
               role=str(a.get("approver_role") or ""), decision=AP.APPROVE
               if approve else AP.REJECT, comment=note)
     DB.update_fields(conn, "allowances", "allowance_id", allowance_id,
-                     status=new, created_by=actor_id)
+                     status=new)
     a["status"] = new
     return a
 

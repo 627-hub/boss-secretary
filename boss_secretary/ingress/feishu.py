@@ -487,7 +487,7 @@ class SecretaryBot:
         print(f"[feishu] 合同 AI 审查: {rv['verdict']} risks={len(rv['risks'])}")
         rv["review_source"] = source
         cid = CT.create(self.store.conn, employee_id=emp["user_id"],
-                        dept_id=emp.get("dept_id"), title=ctx["title"],
+                        dept_id=emp.get("dept_id"), title=ctx.get("title"),
                         supplier=ctx.get("supplier"), amount=ctx.get("amount"),
                         start_date=ctx.get("start_date"), end_date=ctx.get("end_date"),
                         payment_terms=ctx.get("payment_terms"), ai_review=rv,
@@ -497,7 +497,7 @@ class SecretaryBot:
             uid = self.roles.get(role)
             if uid:
                 self.send_card(uid, contract_review_card(
-                    cid, ctx["title"], ctx.get("supplier"), ctx.get("amount"),
+                    cid, ctx.get("title"), ctx.get("supplier"), ctx.get("amount"),
                     rv["risks"] + [{"level": "提示", "clause": "缺失条款",
                                     "note": "、".join(rv["missing"])}]))
             else:

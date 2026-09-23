@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from boss_secretary.core import compliance as C
 from boss_secretary.core import llm as L

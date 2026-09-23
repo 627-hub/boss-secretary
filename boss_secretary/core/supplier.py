@@ -89,7 +89,7 @@ def create_request(conn, *, name: str, uscc: str | None = None,
                    bank_account: str | None = None, reason: str = "",
                    created_by: str = "") -> dict:
     dup = find_by_name(conn, name)
-    if dup and dup["status"] in (ACTIVE, PENDING, REVIEWING):
+    if dup and dup["status"] in (ACTIVE, PENDING, REVIEWING, BLACKLISTED, SUSPENDED):
         raise ValueError(f"供应商「{name}」已存在（{dup['supplier_id']}，{dup['status']}）")
     sid = DB.new_id("S")
     conn.execute(
@@ -176,8 +176,8 @@ def unblacklist(conn, supplier_id: str, actor_id: str) -> None:
     if s is None or s["status"] != BLACKLISTED:
         raise ValueError("供应商不在黑名单")
     DB.update_fields(conn, "suppliers", "supplier_id", supplier_id,
-                     status=ACTIVE, reason="移出黑名单", updated_at=DB.now())
-    _log_change(conn, supplier_id, "status", BLACKLISTED, ACTIVE, actor_id)
+                     status=PENDING, approvers="", updated_at=DB.now())
+    _log_change(conn, supplier_id, "status", BLACKLISTED, PENDING, actor_id)
     conn.commit()
 
 

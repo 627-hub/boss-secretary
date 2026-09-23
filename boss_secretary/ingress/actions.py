@@ -64,7 +64,9 @@ def handle_reject(bot, open_id: str, value: Mapping, comment: str) -> str:
 
 @action("paid")
 def handle_paid(bot, open_id: str, value: Mapping, comment: str) -> str:
-    if bot.roles.get("finance") and open_id != bot.roles["finance"]:
+    if not bot.roles.get("finance"):
+        return "财务角色未配置，无法确认打款"
+    if open_id != bot.roles["finance"]:
         return "仅财务可确认打款"
     bot.router.mark_paid(value.get("ticket_id"), open_id, "finance")
     return "✅ 已确认打款，单据关闭"

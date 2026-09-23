@@ -118,8 +118,7 @@ def sql_scope(actor: Actor) -> tuple[str, list[Any]]:
     if s == SCOPE_SELF:
         return "employee_id = ?", [actor.user_id]
     if s == SCOPE_DEPT:
-        return "dept_id = ? AND (sensitivity != 'confidential' OR employee_id = ?)", \
-               [actor.dept_id, actor.user_id]
+        return "(dept_id = ? OR employee_id = ?)", [actor.dept_id, actor.user_id]
     if s == SCOPE_FINANCE_PENDING:
         return "status IN ('APPROVED', 'PAID')", []
     return "1=1", []

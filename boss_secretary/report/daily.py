@@ -118,7 +118,8 @@ def render_department(data: Mapping, dept_id: str) -> str:
 
 
 def render_finance(data: Mapping) -> str:
-    approved = sorted([t for t in data["tickets"] if t.get("status") == R.APPROVED],
+    payable = (R.APPROVED, R.AUTO_APPROVED)
+    approved = sorted([t for t in data["tickets"] if t.get("status") in payable],
                       key=lambda t: -(t.get("amount") or 0))
     total = sum(t.get("amount") or 0 for t in approved)
     lines = [f"═══ 财务简报 · 待付清单 · {data['day']} ═══",

@@ -22,7 +22,7 @@ llm:
     enabled: false
     base_url: "https://open.bigmodel.cn/api/paas/v4"
     model: "glm-4.6"
-    api_key_env: "ZHIPU_API_KEY"
+    api_key: ""
 
 daily_report:
   time: "18:00"

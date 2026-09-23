@@ -71,7 +71,9 @@ def request(conn, *, seal_id: str, applicant: str, doc_title: str,
         raise ValueError(f"印章不可用: {seal_id}")
     if BLANK_PAT and BLANK_PAT.search(doc_title or ""):
         raise ValueError("空白文件用印为高风险操作，禁止受理")
-    if "合同" in seal["name"] and contract_id:
+    if "合同" in seal["name"]:
+        if not contract_id:
+            raise ValueError("合同专用章必须关联合同且合同状态为 active")
         from boss_secretary.core import contract as CT
         c = CT.get(conn, contract_id)
         if c is None:

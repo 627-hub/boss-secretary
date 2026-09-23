@@ -13,6 +13,7 @@ rules:
   - {id: M01, cells: {expense_type: 交通, amount: "<=500",    rule_result: PASS, llm_verdict: PASS}, then: {action: AUTO_APPROVE}}
   - {id: M02, cells: {expense_type: 餐饮, amount: "<=2000",   rule_result: PASS, llm_verdict: PASS}, then: {action: MANAGER}}
   - {id: M07, cells: {rule_result: FAIL},                                                              then: {action: MANUAL_REVIEW}}
+  - {id: M08, cells: {llm_verdict: FAIL},                                                              then: {action: MANUAL_REVIEW}}
   - {id: M03, cells: {amount: "<=5000"},                                                               then: {action: MANAGER}}
   - {id: M04, cells: {amount: "5001-50000"},                                                           then: {action: MANAGER_BOSS}}
   - {id: M05, cells: {amount: ">50000"},                                                               then: {action: MANAGER_BOSS_FINANCE_CONSIGN, notify: [finance]}}

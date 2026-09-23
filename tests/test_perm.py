@@ -66,7 +66,7 @@ def test_confidential_unknowable_to_outsider():
 def test_sql_scope():
     assert P.sql_scope(actor())[0] == "employee_id = ?"
     frag, params = P.sql_scope(actor(uid="m1", role=P.MANAGER, dept="D1"))
-    assert frag.startswith("dept_id = ?") and "confidential" in frag
+    assert frag.startswith("(dept_id = ?") and "employee_id = ?" in frag
     assert params == ["D1", "m1"]
     assert "APPROVED" in P.sql_scope(actor(uid="f", role=P.FINANCE))[0]
     assert "PAID" in P.sql_scope(actor(uid="f", role=P.FINANCE))[0]

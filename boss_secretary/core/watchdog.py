@@ -38,12 +38,16 @@ def _feishu_token(app_id: str, app_secret: str) -> str:
 
 
 def send_message(token: str, receive_id: str, text: str) -> None:
-    requests.post(
+    r = requests.post(
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
         headers={"Authorization": f"Bearer {token}"},
         json={"receive_id": receive_id, "msg_type": "text",
               "content": json.dumps({"text": text}, ensure_ascii=False)},
         timeout=15)
+    r.raise_for_status()
+    d = r.json()
+    if d.get("code") != 0:
+        raise WatchdogError(f"发送消息失败: {d.get('msg')}")
 
 
 def check_stale(heartbeat_path: Path, max_age_minutes: int,

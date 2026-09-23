@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import struct
 import time
 from typing import Tuple
@@ -51,11 +52,22 @@ def decrypt_msg(encrypt_b64: str, aes_key: bytes, receive_id: str) -> str:
         raw = cipher.decrypt(base64.b64decode(encrypt_b64))
     except Exception as e:
         raise WeComCryptoError(f"AES 解密失败: {e}") from e
+    if not raw:
+        raise WeComCryptoError("解密结果为空")
     pad = raw[-1]
+    if not 1 <= pad <= 32 or pad > len(raw):
+        raise WeComCryptoError(f"PKCS#7 填充非法: {pad}")
     raw = raw[:-pad]
+    if len(raw) < 20:
+        raise WeComCryptoError("解密结果长度不足")
     msg_len = struct.unpack(">I", raw[16:20])[0]
-    msg = raw[20:20 + msg_len].decode()
-    recv = raw[20 + msg_len:].decode()
+    if 20 + msg_len > len(raw):
+        raise WeComCryptoError(f"msg_len 越界: {msg_len} > {len(raw) - 20}")
+    try:
+        msg = raw[20:20 + msg_len].decode()
+        recv = raw[20 + msg_len:].decode()
+    except UnicodeDecodeError as e:
+        raise WeComCryptoError(f"解密内容编码非法: {e}") from e
     if recv != receive_id:
         raise WeComCryptoError(f"receiveid 校验失败: {recv} != {receive_id}")
     return msg
@@ -64,13 +76,15 @@ def decrypt_msg(encrypt_b64: str, aes_key: bytes, receive_id: str) -> str:
 def verify_url(token: str, aes_key: str, receive_id: str, msg_signature: str,
                timestamp: str, nonce: str, echostr: str) -> str:
     """GET 回调验证：签名校验 + 解密，返回明文 echostr 给企微。"""
-    if signature(token, timestamp, nonce, echostr) != msg_signature:
+    if not hmac.compare_digest(signature(token, timestamp, nonce, echostr), msg_signature):
         raise WeComCryptoError("URL 验证签名不匹配")
     return decrypt_msg(echostr, derive_key(aes_key), receive_id)
 
 
 def parse_xml(xml: str) -> dict:
     import xml.etree.ElementTree as ET
+    if "<!DOCTYPE" in xml or "<!ENTITY" in xml:
+        raise WeComCryptoError("XML 含非法 DTD/ENTITY 声明")
     root = ET.fromstring(xml)
     return {child.tag: (child.text or "") for child in root}
 

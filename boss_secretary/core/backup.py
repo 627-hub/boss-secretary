@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import shutil
 import sqlite3
@@ -28,24 +29,25 @@ def backup(db_path: str | Path, out_dir: str | Path = "data/backups",
         raise FileNotFoundError(f"数据库不存在: {src}")
     # SQLite 在线备份（不锁库、含 WAL 已提交数据）
     tmp_sql = out_dir / f"{src.stem}_{stamp}.db"
-    dst = sqlite3.connect(str(tmp_sql))
-    conn = sqlite3.connect(str(src))
-    conn.backup(dst)
-    conn.close()
-    dst.close()
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(tmp_sql, arcname=f"{src.stem}.db")
-        tmp_sql.unlink()
-        for item in items:
-            p = Path(item)
-            if not p.exists():
-                continue
-            if p.is_file():
-                z.write(p, arcname=str(p))
-            else:
-                for f in p.rglob("*"):
-                    if f.is_file() and "__pycache__" not in str(f):
-                        z.write(f, arcname=str(f))
+    try:
+        with contextlib.closing(sqlite3.connect(str(src))) as conn, \
+                contextlib.closing(sqlite3.connect(str(tmp_sql))) as dst:
+            conn.backup(dst)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(tmp_sql, arcname=f"{src.stem}.db")
+            for item in items:
+                p = Path(item)
+                if not p.exists():
+                    continue
+                if p.is_file():
+                    z.write(p, arcname=str(p))
+                else:
+                    for f in p.rglob("*"):
+                        if f.is_file() and "__pycache__" not in str(f):
+                            z.write(f, arcname=str(f))
+    finally:
+        if tmp_sql.exists():
+            tmp_sql.unlink()
     prune(out_dir, keep)
     kept = len(list(out_dir.glob("backup_*.zip")))
     copied_to = None
